@@ -1,0 +1,683 @@
+use std::collections::BTreeMap;
+
+use crate::ai;
+use crate::app::{AppAction, AppEvent, Effect, UiIntent};
+use crate::commands::{parse_input, ParsedInput};
+use crate::domain::{
+    AppState, ApprovalDecision, ApprovalMode, ApprovalRequest, CommandRecord, CommandStatus,
+    DashboardTab, DiagnosticLevel, DiagnosticRecord, ExecutionMode, ExecutionRequest, FocusTarget,
+    GitSnapshot, JobRecord, JobStatus, LogEntry, LogSeverity, LogSource, LogStream, ModalState,
+    Notification, NotificationLevel, OutputStream, ProcessSnapshot, ProcessStatus, ProjectContext,
+    ServiceHealth, ServiceRecord, ServiceSource, TimelineEntry, TimelineKind,
+};
+use crate::safety::{approval_message, approval_mode_for, classify_command};
+use crate::shared::ids::{ApprovalId, CommandId, IdGenerator};
+use crate::shared::time::now_utc;
+
+pub struct AppStore {
+    state: AppState,
+    ids: IdGenerator,
+}
+
+impl AppStore {
+    pub fn new(state: AppState) -> Self {
+        Self {
+            state,
+            ids: IdGenerator::new(),
+        }
+    }
+
+    pub fn state(&self) -> &AppState {
+        &self.state
+    }
+
+    pub fn state_mut(&mut self) -> &mut AppState {
+        &mut self.state
+    }
+
+    pub fn dispatch_action(&mut self, action: AppAction) -> Vec<Effect> {
+        match action {
+            AppAction::Ui(intent) => self.handle_ui_intent(intent),
+            AppAction::ParsedInput(input) => self.handle_parsed_input(input),
+            AppAction::Approve(id) => self.resolve_approval(id, true),
+            AppAction::Deny(id) => self.resolve_approval(id, false),
+            AppAction::Cancel(command_id) => {
+                self.append_timeline(
+                    TimelineKind::Command,
+                    format!("cancellation requested for command #{command_id}"),
+                );
+                vec![Effect::CancelCommand(command_id)]
+            }
+        }
+    }
+
+    pub fn dispatch_event(&mut self, event: AppEvent) -> Vec<Effect> {
+        match event {
+            AppEvent::ProjectScanned(project) => {
+                self.state.project = project.clone();
+                self.append_timeline(
+                    TimelineKind::System,
+                    format!("project context refreshed for {}", project.name),
+                );
+            }
+            AppEvent::GitRefreshed(snapshot) => {
+                self.state.git = snapshot;
+            }
+            AppEvent::CommandStarted {
+                command_id,
+                job_id,
+                service_id,
+                pid,
+            } => {
+                if let Some(command) = self.find_command_mut(command_id) {
+                    command.status = CommandStatus::Running;
+                    command.started_at = Some(now_utc());
+                }
+                if let Some(job) = self.find_job_mut(job_id) {
+                    job.status = JobStatus::Running;
+                    job.started_at = Some(now_utc());
+                    job.pid = pid;
+                }
+                let process = ProcessSnapshot {
+                    id: self.ids.next_process(),
+                    command_id: Some(command_id),
+                    job_id: Some(job_id),
+                    pid,
+                    label: self
+                        .find_command(command_id)
+                        .map(|command| command.raw.clone())
+                        .unwrap_or_else(|| "managed command".to_string()),
+                    status: ProcessStatus::Running,
+                    cpu_percent: None,
+                    memory_bytes: None,
+                    observed_at: now_utc(),
+                };
+                self.upsert_process(process);
+                if let Some(service_id) = service_id {
+                    self.upsert_service(ServiceRecord {
+                        id: service_id,
+                        name: self
+                            .find_command(command_id)
+                            .map(|command| command.raw.clone())
+                            .unwrap_or_else(|| "background service".to_string()),
+                        source: ServiceSource::ManagedCommand,
+                        pid,
+                        ports: Vec::new(),
+                        health: ServiceHealth::Healthy,
+                        tags: vec!["managed".to_string()],
+                        linked_command: Some(command_id),
+                        last_seen: now_utc(),
+                    });
+                }
+                self.state.commands.active_command = Some(command_id);
+                self.append_timeline(
+                    TimelineKind::Command,
+                    format!("command #{command_id} started{}", pid.map(|pid| format!(" (pid {pid})")).unwrap_or_default()),
+                );
+            }
+            AppEvent::CommandOutput {
+                command_id,
+                job_id: _,
+                service_id,
+                stream,
+                chunk,
+            } => {
+                if let Some(command) = self.find_command_mut(command_id) {
+                    command.output_line_count += 1;
+                }
+                let log_entry = crate::infra::logs::normalize_command_output(
+                    self.ids.next_log(),
+                    now_utc(),
+                    command_id,
+                    service_id,
+                    stream,
+                    chunk.clone(),
+                );
+                let source_key = crate::infra::logs::source_key(&log_entry.source);
+                let per_source_capacity = self.state.config.logs.per_source_capacity;
+                self.state.logs.recent.push(log_entry.clone());
+                self.state
+                    .logs
+                    .per_source
+                    .entry(source_key)
+                    .or_insert_with(|| crate::shared::ring_buffer::RingBuffer::new(per_source_capacity))
+                    .push(log_entry.clone());
+                self.append_timeline(
+                    TimelineKind::Log,
+                    format!(
+                        "#{} {}",
+                        command_id,
+                        truncate_for_timeline(&log_entry.raw, 96)
+                    ),
+                );
+            }
+            AppEvent::CommandExited {
+                command_id,
+                job_id,
+                service_id,
+                exit_code,
+            } => {
+                let succeeded = exit_code == 0;
+                if let Some(command) = self.find_command_mut(command_id) {
+                    command.status = if succeeded {
+                        CommandStatus::Succeeded
+                    } else {
+                        CommandStatus::Failed
+                    };
+                    command.exit_code = Some(exit_code);
+                    command.ended_at = Some(now_utc());
+                }
+                if let Some(job) = self.find_job_mut(job_id) {
+                    job.status = if succeeded {
+                        JobStatus::Succeeded
+                    } else {
+                        JobStatus::Failed
+                    };
+                    job.ended_at = Some(now_utc());
+                }
+                if let Some(service_id) = service_id {
+                    if let Some(service) = self.find_service_mut(service_id) {
+                        service.health = if succeeded {
+                            ServiceHealth::Stopped
+                        } else {
+                            ServiceHealth::Degraded
+                        };
+                        service.last_seen = now_utc();
+                    }
+                }
+                self.mark_process(command_id, if succeeded { ProcessStatus::Exited } else { ProcessStatus::Failed });
+                self.state.commands.active_command = None;
+                self.append_timeline(
+                    TimelineKind::Command,
+                    format!("command #{command_id} exited with code {exit_code}"),
+                );
+                if !succeeded {
+                    self.push_notification(
+                        NotificationLevel::Warn,
+                        format!("command #{command_id} failed with exit code {exit_code}"),
+                    );
+                }
+            }
+            AppEvent::CommandCancelled {
+                command_id,
+                job_id,
+                service_id,
+            } => {
+                if let Some(command) = self.find_command_mut(command_id) {
+                    command.status = CommandStatus::Cancelled;
+                    command.ended_at = Some(now_utc());
+                }
+                if let Some(job) = self.find_job_mut(job_id) {
+                    job.status = JobStatus::Cancelled;
+                    job.ended_at = Some(now_utc());
+                }
+                if let Some(service_id) = service_id {
+                    if let Some(service) = self.find_service_mut(service_id) {
+                        service.health = ServiceHealth::Stopped;
+                        service.last_seen = now_utc();
+                    }
+                }
+                self.mark_process(command_id, ProcessStatus::Cancelled);
+                self.append_timeline(
+                    TimelineKind::Command,
+                    format!("command #{command_id} cancelled"),
+                );
+            }
+            AppEvent::Diagnostic {
+                level,
+                message,
+                context,
+            } => {
+                self.state.diagnostics.records.push(DiagnosticRecord {
+                    at: now_utc(),
+                    level,
+                    message: message.clone(),
+                    context,
+                });
+                if matches!(level, DiagnosticLevel::Warn | DiagnosticLevel::Error) {
+                    self.push_notification(NotificationLevel::Warn, message.clone());
+                }
+            }
+            AppEvent::Error(message) => {
+                self.state.ui.modal = Some(ModalState::Error(message.clone()));
+                self.state.ui.focus = FocusTarget::Modal;
+                self.state.diagnostics.records.push(DiagnosticRecord {
+                    at: now_utc(),
+                    level: DiagnosticLevel::Error,
+                    message: message.clone(),
+                    context: None,
+                });
+                self.append_timeline(TimelineKind::Error, message.clone());
+                self.push_notification(NotificationLevel::Error, message);
+            }
+        }
+        Vec::new()
+    }
+
+    fn handle_ui_intent(&mut self, intent: UiIntent) -> Vec<Effect> {
+        match intent {
+            UiIntent::KeyChar(c) => {
+                if self.state.ui.modal.is_some() {
+                    match c {
+                        'y' | 'Y' => return self.dispatch_action(AppAction::Ui(UiIntent::ApproveCurrent)),
+                        'n' | 'N' => return self.dispatch_action(AppAction::Ui(UiIntent::DenyCurrent)),
+                        _ => {}
+                    }
+                } else if matches!(self.state.ui.focus, FocusTarget::CommandPane) {
+                    self.state.ui.input_buffer.push(c);
+                }
+            }
+            UiIntent::Backspace => {
+                self.state.ui.input_buffer.pop();
+            }
+            UiIntent::Submit => {
+                if self.state.ui.modal.is_some() {
+                    return self.dispatch_action(AppAction::Ui(UiIntent::ApproveCurrent));
+                }
+
+                if self.state.ui.input_buffer.trim().is_empty() {
+                    if let Some(approval_id) = self.current_inline_approval_id() {
+                        return self.dispatch_action(AppAction::Approve(approval_id));
+                    }
+                    return Vec::new();
+                }
+
+                let raw = std::mem::take(&mut self.state.ui.input_buffer);
+                match parse_input(&raw) {
+                    Ok(parsed) => return self.dispatch_action(AppAction::ParsedInput(parsed)),
+                    Err(message) => {
+                        self.push_notification(NotificationLevel::Warn, message.clone());
+                        self.append_timeline(TimelineKind::Error, message);
+                    }
+                }
+            }
+            UiIntent::ClearInput => {
+                self.state.ui.input_buffer.clear();
+            }
+            UiIntent::NextFocus => {
+                if self.state.ui.modal.is_some() {
+                    self.state.ui.focus = FocusTarget::Modal;
+                    return Vec::new();
+                }
+                self.state.ui.focus = match self.state.ui.focus {
+                    FocusTarget::CommandPane => FocusTarget::DashboardPane,
+                    FocusTarget::DashboardPane => FocusTarget::EventStream,
+                    FocusTarget::EventStream | FocusTarget::Modal => FocusTarget::CommandPane,
+                };
+            }
+            UiIntent::PrevFocus => {
+                if self.state.ui.modal.is_some() {
+                    self.state.ui.focus = FocusTarget::Modal;
+                    return Vec::new();
+                }
+                self.state.ui.focus = match self.state.ui.focus {
+                    FocusTarget::CommandPane | FocusTarget::Modal => FocusTarget::EventStream,
+                    FocusTarget::DashboardPane => FocusTarget::CommandPane,
+                    FocusTarget::EventStream => FocusTarget::DashboardPane,
+                };
+            }
+            UiIntent::NextTab => self.advance_tab(true),
+            UiIntent::PrevTab => self.advance_tab(false),
+            UiIntent::ApproveCurrent => {
+                if let Some(approval_id) = self.current_approval_id() {
+                    return self.dispatch_action(AppAction::Approve(approval_id));
+                }
+            }
+            UiIntent::DenyCurrent => {
+                if let Some(approval_id) = self.current_approval_id() {
+                    return self.dispatch_action(AppAction::Deny(approval_id));
+                }
+                self.state.ui.modal = None;
+                self.state.ui.focus = FocusTarget::CommandPane;
+            }
+            UiIntent::Resize(width, height) => {
+                self.state.ui.terminal_size = (width, height);
+            }
+            UiIntent::Tick => {
+                self.state.app.tick_count += 1;
+                let mut effects = Vec::new();
+                if self.state.config.git.enabled && self.state.app.tick_count % 50 == 0 {
+                    effects.push(Effect::RefreshGit(self.state.project.root.clone()));
+                }
+                if self.state.app.tick_count % 100 == 0 {
+                    effects.push(Effect::RefreshProjectContext(self.state.project.root.clone()));
+                }
+                return effects;
+            }
+            UiIntent::Quit => {
+                self.state.app.should_quit = true;
+                return vec![Effect::Shutdown];
+            }
+            UiIntent::Esc => {
+                if self.state.ui.modal.is_some() {
+                    return self.dispatch_action(AppAction::Ui(UiIntent::DenyCurrent));
+                }
+                self.state.ui.input_buffer.clear();
+            }
+        }
+        Vec::new()
+    }
+
+    fn handle_parsed_input(&mut self, input: ParsedInput) -> Vec<Effect> {
+        match input {
+            ParsedInput::Execute {
+                command,
+                background,
+                provenance,
+            } => self.prepare_execution(command, background, provenance),
+            ParsedInput::Quit => self.dispatch_action(AppAction::Ui(UiIntent::Quit)),
+            ParsedInput::Clear => {
+                self.state.ui.input_buffer.clear();
+                self.state.logs.recent.clear();
+                self.state.logs.per_source.clear();
+                self.append_timeline(TimelineKind::System, "cleared command input and visible log buffer".to_string());
+                Vec::new()
+            }
+            ParsedInput::NextTab => {
+                self.advance_tab(true);
+                Vec::new()
+            }
+            ParsedInput::PrevTab => {
+                self.advance_tab(false);
+                Vec::new()
+            }
+            ParsedInput::ApprovePending => {
+                if let Some(approval_id) = self.current_approval_id() {
+                    self.dispatch_action(AppAction::Approve(approval_id))
+                } else {
+                    self.push_notification(NotificationLevel::Info, "no pending approvals".to_string());
+                    Vec::new()
+                }
+            }
+            ParsedInput::DenyPending => {
+                if let Some(approval_id) = self.current_approval_id() {
+                    self.dispatch_action(AppAction::Deny(approval_id))
+                } else {
+                    self.push_notification(NotificationLevel::Info, "no pending approvals".to_string());
+                    Vec::new()
+                }
+            }
+            ParsedInput::Cancel(command_id) => self.dispatch_action(AppAction::Cancel(command_id)),
+            ParsedInput::Help => {
+                self.push_notification(
+                    NotificationLevel::Info,
+                    "slash commands: /help, /bg <cmd>, /cancel <id>, /approve, /deny, /tab next, /tab prev, /quit"
+                        .to_string(),
+                );
+                Vec::new()
+            }
+            ParsedInput::AiPrompt(prompt) => {
+                let message = ai::unavailable_message(&prompt);
+                self.state.ai.last_error = Some(message.clone());
+                self.push_notification(NotificationLevel::Info, message.clone());
+                self.append_timeline(TimelineKind::System, message);
+                Vec::new()
+            }
+        }
+    }
+
+    fn prepare_execution(
+        &mut self,
+        raw: String,
+        background: bool,
+        provenance: crate::domain::CommandProvenance,
+    ) -> Vec<Effect> {
+        let safety_class = classify_command(&raw);
+        let command_id = self.ids.next_command();
+        let job_id = self.ids.next_job();
+        let service_id = background.then(|| self.ids.next_service());
+        let request = ExecutionRequest {
+            command_id,
+            job_id,
+            service_id,
+            raw: raw.clone(),
+            cwd: self.state.project.root.clone(),
+            env: BTreeMap::new(),
+            shell: self.state.config.commands.default_shell.clone(),
+            mode: ExecutionMode::Managed,
+            provenance,
+            background,
+            safety_class,
+        };
+        let approval_mode = approval_mode_for(safety_class, &self.state.config.safety);
+        let status = match approval_mode {
+            Some(ApprovalMode::InlineReview) => CommandStatus::PendingReview,
+            Some(ApprovalMode::ModalConfirm) => CommandStatus::PendingApproval,
+            None => CommandStatus::Queued,
+        };
+
+        self.state.commands.history.push(raw.clone());
+        if self.state.commands.history.len() > self.state.config.commands.history_limit {
+            let overflow = self.state.commands.history.len() - self.state.config.commands.history_limit;
+            self.state.commands.history.drain(0..overflow);
+        }
+
+        self.state
+            .commands
+            .records
+            .push(CommandRecord::from_request(&request, status));
+        self.state.jobs.records.push(JobRecord {
+            id: job_id,
+            command_id,
+            label: raw.clone(),
+            pid: None,
+            background,
+            status: JobStatus::Queued,
+            started_at: None,
+            ended_at: None,
+        });
+
+        if let Some(mode) = approval_mode {
+            let approval = ApprovalRequest {
+                id: self.ids.next_approval(),
+                command_id,
+                created_at: now_utc(),
+                class: safety_class,
+                mode,
+                summary: raw.clone(),
+                detail: format!(
+                    "{} action classified as {}",
+                    if background { "background" } else { "foreground" },
+                    safety_class.label()
+                ),
+                execution: request,
+            };
+            self.append_timeline(
+                TimelineKind::Approval,
+                approval_message(&approval),
+            );
+            if matches!(approval.mode, ApprovalMode::ModalConfirm) {
+                self.state.ui.modal = Some(ModalState::Approval(approval.id));
+                self.state.ui.focus = FocusTarget::Modal;
+            }
+            self.state.approvals.pending.push(approval.clone());
+            return vec![Effect::QueueApproval(approval)];
+        }
+
+        self.append_timeline(
+            TimelineKind::Command,
+            format!("queued command #{command_id}: {}", truncate_for_timeline(&raw, 96)),
+        );
+        vec![Effect::ExecuteCommand(request)]
+    }
+
+    fn resolve_approval(&mut self, approval_id: ApprovalId, approved: bool) -> Vec<Effect> {
+        let position = self
+            .state
+            .approvals
+            .pending
+            .iter()
+            .position(|request| request.id == approval_id);
+        let Some(position) = position else {
+            return Vec::new();
+        };
+
+        let request = self.state.approvals.pending.remove(position);
+        self.state.approvals.history.push(ApprovalDecision {
+            approval_id,
+            command_id: request.command_id,
+            approved,
+            decided_at: now_utc(),
+            note: None,
+        });
+        self.state.ui.modal = None;
+        self.state.ui.focus = FocusTarget::CommandPane;
+
+        if approved {
+            if let Some(command) = self.find_command_mut(request.command_id) {
+                command.status = CommandStatus::Queued;
+            }
+            self.append_timeline(
+                TimelineKind::Approval,
+                format!("approved command #{}", request.command_id),
+            );
+            return vec![Effect::ExecuteCommand(request.execution)];
+        }
+
+        if let Some(command) = self.find_command_mut(request.command_id) {
+            command.status = CommandStatus::Denied;
+            command.ended_at = Some(now_utc());
+        }
+        if let Some(job) = self.find_job_by_command_mut(request.command_id) {
+            job.status = JobStatus::Cancelled;
+            job.ended_at = Some(now_utc());
+        }
+        self.append_timeline(
+            TimelineKind::Approval,
+            format!("denied command #{}", request.command_id),
+        );
+        Vec::new()
+    }
+
+    fn current_approval_id(&self) -> Option<ApprovalId> {
+        if let Some(ModalState::Approval(id)) = self.state.ui.modal.as_ref() {
+            return Some(*id);
+        }
+        self.current_inline_approval_id()
+    }
+
+    fn current_inline_approval_id(&self) -> Option<ApprovalId> {
+        self.state
+            .approvals
+            .pending
+            .iter()
+            .find(|request| matches!(request.mode, ApprovalMode::InlineReview))
+            .map(|request| request.id)
+    }
+
+    fn append_timeline(&mut self, kind: TimelineKind, message: String) {
+        self.state.timeline.entries.push(TimelineEntry {
+            id: self.ids.next_timeline(),
+            at: now_utc(),
+            kind,
+            message,
+        });
+    }
+
+    fn push_notification(&mut self, level: NotificationLevel, message: String) {
+        self.state.notifications.items.push(Notification {
+            id: self.ids.next_notification(),
+            level,
+            message,
+            created_at: now_utc(),
+        });
+        if self.state.notifications.items.len() > 10 {
+            let overflow = self.state.notifications.items.len() - 10;
+            self.state.notifications.items.drain(0..overflow);
+        }
+    }
+
+    fn advance_tab(&mut self, forward: bool) {
+        let tabs = DashboardTab::all();
+        let current_index = tabs
+            .iter()
+            .position(|tab| *tab == self.state.ui.dashboard_tab)
+            .unwrap_or(0);
+        let next_index = if forward {
+            (current_index + 1) % tabs.len()
+        } else if current_index == 0 {
+            tabs.len() - 1
+        } else {
+            current_index - 1
+        };
+        self.state.ui.dashboard_tab = tabs[next_index];
+    }
+
+    fn find_command(&self, id: CommandId) -> Option<&CommandRecord> {
+        self.state.commands.records.iter().find(|record| record.id == id)
+    }
+
+    fn find_command_mut(&mut self, id: CommandId) -> Option<&mut CommandRecord> {
+        self.state.commands.records.iter_mut().find(|record| record.id == id)
+    }
+
+    fn find_job_mut(&mut self, id: crate::shared::ids::JobId) -> Option<&mut JobRecord> {
+        self.state.jobs.records.iter_mut().find(|record| record.id == id)
+    }
+
+    fn find_job_by_command_mut(&mut self, id: CommandId) -> Option<&mut JobRecord> {
+        self.state
+            .jobs
+            .records
+            .iter_mut()
+            .find(|record| record.command_id == id)
+    }
+
+    fn upsert_service(&mut self, service: ServiceRecord) {
+        match self
+            .state
+            .services
+            .registry
+            .iter_mut()
+            .find(|record| record.id == service.id)
+        {
+            Some(existing) => *existing = service,
+            None => self.state.services.registry.push(service),
+        }
+    }
+
+    fn find_service_mut(
+        &mut self,
+        id: crate::shared::ids::ServiceId,
+    ) -> Option<&mut ServiceRecord> {
+        self.state
+            .services
+            .registry
+            .iter_mut()
+            .find(|record| record.id == id)
+    }
+
+    fn upsert_process(&mut self, process: ProcessSnapshot) {
+        match self
+            .state
+            .processes
+            .snapshots
+            .iter_mut()
+            .find(|record| record.command_id == process.command_id)
+        {
+            Some(existing) => *existing = process,
+            None => self.state.processes.snapshots.push(process),
+        }
+    }
+
+    fn mark_process(&mut self, command_id: CommandId, status: ProcessStatus) {
+        if let Some(process) = self
+            .state
+            .processes
+            .snapshots
+            .iter_mut()
+            .find(|record| record.command_id == Some(command_id))
+        {
+            process.status = status;
+            process.observed_at = now_utc();
+        }
+    }
+}
+
+fn truncate_for_timeline(message: &str, max_len: usize) -> String {
+    let trimmed = message.trim();
+    if trimmed.len() <= max_len {
+        return trimmed.to_string();
+    }
+    format!("{}...", &trimmed[..max_len.saturating_sub(3)])
+}
