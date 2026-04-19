@@ -184,4 +184,3 @@ fn spawn_stream_reader<R>(
         }
     });
 }
-

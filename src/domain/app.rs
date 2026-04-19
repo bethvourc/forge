@@ -2,8 +2,8 @@ use std::time::SystemTime;
 
 use crate::config::ForgeConfig;
 use crate::domain::{
-    AiSessionState, ApprovalState, CommandState, DiagnosticsState, GitSnapshot, JobState,
-    LogState, ProcessState, ProjectContext, ServiceState, TestState, TimelineState,
+    AiSessionState, ApprovalState, CommandState, DiagnosticsState, GitSnapshot, JobState, LogState,
+    ProcessState, ProjectContext, ServiceState, TestState, TimelineState,
 };
 use crate::shared::ids::{ApprovalId, NotificationId};
 use crate::shared::time::now_utc;
@@ -57,6 +57,7 @@ impl DashboardTab {
 #[derive(Debug, Clone)]
 pub enum ModalState {
     Approval(ApprovalId),
+    Help,
     Error(String),
 }
 
@@ -139,15 +140,13 @@ impl AppState {
             tests: TestState::default(),
             timeline: TimelineState::new(global_log_capacity),
             approvals: ApprovalState::default(),
-            ai: AiSessionState {
-                enabled: config.ai.enabled,
-                provider: config.ai.provider.clone(),
-                last_response: None,
-                last_error: None,
-            },
+            ai: AiSessionState::from_config(
+                config.ai.enabled,
+                config.ai.provider.clone(),
+                config.ai.model.clone(),
+            ),
             diagnostics: DiagnosticsState::new(diagnostics_capacity),
             notifications: NotificationState::default(),
         }
     }
 }
-

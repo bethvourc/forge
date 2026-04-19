@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ForgeConfig {
     pub ui: UiConfig,
@@ -13,21 +13,6 @@ pub struct ForgeConfig {
     pub observability: ObservabilityConfig,
 }
 
-impl Default for ForgeConfig {
-    fn default() -> Self {
-        Self {
-            ui: UiConfig::default(),
-            commands: CommandConfig::default(),
-            safety: SafetyConfig::default(),
-            services: ServiceConfig::default(),
-            logs: LogConfig::default(),
-            git: GitConfig::default(),
-            ai: AiConfig::default(),
-            observability: ObservabilityConfig::default(),
-        }
-    }
-}
-
 impl ForgeConfig {
     pub fn normalize(&mut self) {
         self.ui.tick_rate_ms = self.ui.tick_rate_ms.max(33);
@@ -37,8 +22,15 @@ impl ForgeConfig {
         self.commands.history_limit = self.commands.history_limit.max(25);
         self.logs.global_capacity = self.logs.global_capacity.max(200);
         self.logs.per_source_capacity = self.logs.per_source_capacity.max(50);
-        self.observability.diagnostics_capacity =
-            self.observability.diagnostics_capacity.max(100);
+        self.ai.request_timeout_secs = self.ai.request_timeout_secs.max(5);
+        self.ai.history_limit = self.ai.history_limit.max(5);
+        self.ai.max_recent_commands = self.ai.max_recent_commands.max(1);
+        self.ai.max_recent_logs = self.ai.max_recent_logs.max(1);
+        self.ai.max_recent_events = self.ai.max_recent_events.max(1);
+        self.ai.max_recent_services = self.ai.max_recent_services.max(1);
+        self.ai.max_recent_tests = self.ai.max_recent_tests.max(1);
+        self.ai.max_changed_files = self.ai.max_changed_files.max(1);
+        self.observability.diagnostics_capacity = self.observability.diagnostics_capacity.max(100);
     }
 }
 
@@ -143,6 +135,15 @@ impl Default for GitConfig {
 pub struct AiConfig {
     pub enabled: bool,
     pub provider: Option<String>,
+    pub model: Option<String>,
+    pub request_timeout_secs: u64,
+    pub history_limit: usize,
+    pub max_recent_commands: usize,
+    pub max_recent_logs: usize,
+    pub max_recent_events: usize,
+    pub max_recent_services: usize,
+    pub max_recent_tests: usize,
+    pub max_changed_files: usize,
 }
 
 impl Default for AiConfig {
@@ -150,6 +151,15 @@ impl Default for AiConfig {
         Self {
             enabled: true,
             provider: None,
+            model: None,
+            request_timeout_secs: 30,
+            history_limit: 20,
+            max_recent_commands: 6,
+            max_recent_logs: 12,
+            max_recent_events: 12,
+            max_recent_services: 6,
+            max_recent_tests: 4,
+            max_changed_files: 12,
         }
     }
 }
@@ -315,6 +325,15 @@ impl PartialGitConfig {
 pub struct PartialAiConfig {
     pub enabled: Option<bool>,
     pub provider: Option<String>,
+    pub model: Option<String>,
+    pub request_timeout_secs: Option<u64>,
+    pub history_limit: Option<usize>,
+    pub max_recent_commands: Option<usize>,
+    pub max_recent_logs: Option<usize>,
+    pub max_recent_events: Option<usize>,
+    pub max_recent_services: Option<usize>,
+    pub max_recent_tests: Option<usize>,
+    pub max_changed_files: Option<usize>,
 }
 
 impl PartialAiConfig {
@@ -324,6 +343,33 @@ impl PartialAiConfig {
         }
         if self.provider.is_some() {
             config.provider = self.provider;
+        }
+        if self.model.is_some() {
+            config.model = self.model;
+        }
+        if let Some(value) = self.request_timeout_secs {
+            config.request_timeout_secs = value;
+        }
+        if let Some(value) = self.history_limit {
+            config.history_limit = value;
+        }
+        if let Some(value) = self.max_recent_commands {
+            config.max_recent_commands = value;
+        }
+        if let Some(value) = self.max_recent_logs {
+            config.max_recent_logs = value;
+        }
+        if let Some(value) = self.max_recent_events {
+            config.max_recent_events = value;
+        }
+        if let Some(value) = self.max_recent_services {
+            config.max_recent_services = value;
+        }
+        if let Some(value) = self.max_recent_tests {
+            config.max_recent_tests = value;
+        }
+        if let Some(value) = self.max_changed_files {
+            config.max_changed_files = value;
         }
     }
 }
@@ -349,4 +395,3 @@ impl PartialObservabilityConfig {
         }
     }
 }
-

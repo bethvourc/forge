@@ -102,8 +102,10 @@ pub fn approval_message(request: &ApprovalRequest) -> String {
     match request.class {
         SafetyClass::Caution => format!("Review before running: {}", request.summary),
         SafetyClass::Risky => format!("Approval required: {}", request.summary),
-        SafetyClass::Destructive => format!("Destructive action requires confirmation: {}", request.summary),
+        SafetyClass::Destructive => format!(
+            "Destructive action requires confirmation: {}",
+            request.summary
+        ),
         SafetyClass::Passive | SafetyClass::Safe => request.summary.clone(),
     }
 }
-

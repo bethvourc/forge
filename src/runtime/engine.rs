@@ -5,7 +5,10 @@ use futures::StreamExt;
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
+use crate::ai::AiRuntime;
 use crate::app::{AppAction, AppEvent, AppStore, Effect, UiIntent};
+use crate::commands::ParsedInput;
+use crate::domain::FocusTarget;
 use crate::observability::ObservabilityHandle;
 use crate::runtime::RuntimeSupervisor;
 use crate::shared::error::AppResult;
@@ -24,9 +27,10 @@ impl Runtime {
         store: AppStore,
         terminal: TerminalUi,
         observability: ObservabilityHandle,
+        ai_runtime: AiRuntime,
     ) -> Self {
         let (events_tx, events_rx) = mpsc::channel(512);
-        let supervisor = RuntimeSupervisor::new(events_tx);
+        let supervisor = RuntimeSupervisor::new(events_tx, ai_runtime);
         Self {
             store,
             terminal,
@@ -38,7 +42,8 @@ impl Runtime {
 
     pub async fn run(mut self) -> AppResult<()> {
         info!("forge runtime starting");
-        self.supervisor.refresh_git(self.store.state().project.root.clone());
+        self.supervisor
+            .refresh_git(self.store.state().project.root.clone());
         self.render()?;
 
         let mut tick = tokio::time::interval(Duration::from_millis(
@@ -96,6 +101,9 @@ impl Runtime {
     async fn apply_effects(&mut self, effects: Vec<Effect>) -> AppResult<()> {
         for effect in effects {
             match effect {
+                Effect::RunAiRequest(request) => {
+                    self.supervisor.run_ai_request(*request).await?;
+                }
                 Effect::ExecuteCommand(request) => {
                     self.supervisor.execute_command(request).await?;
                 }
@@ -118,13 +126,14 @@ impl Runtime {
     }
 
     fn render(&mut self) -> AppResult<()> {
-        self.terminal.draw(|frame| render(frame, self.store.state()))?;
+        self.terminal
+            .draw(|frame| render(frame, self.store.state()))?;
         Ok(())
     }
 
     fn handle_terminal_event(&mut self, event: Event) -> Vec<Effect> {
         let action = match event {
-            Event::Key(key) => map_key_event(key),
+            Event::Key(key) => map_key_event(key, self.store.state()),
             Event::Resize(width, height) => Some(AppAction::Ui(UiIntent::Resize(width, height))),
             _ => None,
         };
@@ -135,9 +144,13 @@ impl Runtime {
     }
 }
 
-fn map_key_event(key: KeyEvent) -> Option<AppAction> {
+fn map_key_event(key: KeyEvent, state: &crate::domain::AppState) -> Option<AppAction> {
     if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
         return None;
+    }
+
+    if matches!(key.code, KeyCode::F(1)) {
+        return Some(AppAction::ParsedInput(ParsedInput::Help));
     }
 
     match key.code {
@@ -149,6 +162,20 @@ fn map_key_event(key: KeyEvent) -> Option<AppAction> {
         }
         KeyCode::Tab => Some(AppAction::Ui(UiIntent::NextFocus)),
         KeyCode::BackTab => Some(AppAction::Ui(UiIntent::PrevFocus)),
+        KeyCode::Left
+            if key.modifiers.is_empty()
+                && matches!(state.ui.focus, FocusTarget::DashboardPane)
+                && state.ui.modal.is_none() =>
+        {
+            Some(AppAction::Ui(UiIntent::PrevTab))
+        }
+        KeyCode::Right
+            if key.modifiers.is_empty()
+                && matches!(state.ui.focus, FocusTarget::DashboardPane)
+                && state.ui.modal.is_none() =>
+        {
+            Some(AppAction::Ui(UiIntent::NextTab))
+        }
         KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
             Some(AppAction::Ui(UiIntent::PrevTab))
         }
@@ -158,6 +185,13 @@ fn map_key_event(key: KeyEvent) -> Option<AppAction> {
         KeyCode::Enter => Some(AppAction::Ui(UiIntent::Submit)),
         KeyCode::Backspace => Some(AppAction::Ui(UiIntent::Backspace)),
         KeyCode::Esc => Some(AppAction::Ui(UiIntent::Esc)),
+        KeyCode::Char('?')
+            if key.modifiers == KeyModifiers::SHIFT
+                && !matches!(state.ui.focus, FocusTarget::CommandPane)
+                && state.ui.modal.is_none() =>
+        {
+            Some(AppAction::ParsedInput(ParsedInput::Help))
+        }
         KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
             Some(AppAction::Ui(UiIntent::KeyChar(c)))
         }

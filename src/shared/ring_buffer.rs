@@ -57,4 +57,3 @@ impl<T> IntoIterator for RingBuffer<T> {
         self.items.into_iter()
     }
 }
-

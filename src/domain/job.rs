@@ -27,4 +27,3 @@ pub struct JobRecord {
 pub struct JobState {
     pub records: Vec<JobRecord>,
 }
-

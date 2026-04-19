@@ -13,7 +13,7 @@ pub fn render(frame: &mut Frame<'_>, state: &AppState) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
+            Constraint::Length(3),
             Constraint::Min(12),
             Constraint::Length(state.config.ui.event_stream_height),
         ])
@@ -49,4 +49,3 @@ pub fn render(frame: &mut Frame<'_>, state: &AppState) {
     );
     modal::render(frame, state);
 }
-

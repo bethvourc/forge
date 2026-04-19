@@ -41,7 +41,8 @@ pub fn normalize_command_output(
 
 pub fn infer_severity(chunk: &str, stream: OutputStream) -> LogSeverity {
     let lower = chunk.to_ascii_lowercase();
-    if matches!(stream, OutputStream::Stderr) || lower.contains("error") || lower.contains("failed") {
+    if matches!(stream, OutputStream::Stderr) || lower.contains("error") || lower.contains("failed")
+    {
         LogSeverity::Error
     } else if lower.contains("warn") {
         LogSeverity::Warn
@@ -63,4 +64,3 @@ pub fn source_key(source: &LogSource) -> String {
         LogSource::Ai => "ai".to_string(),
     }
 }
-

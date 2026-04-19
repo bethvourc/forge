@@ -6,6 +6,7 @@ use crate::shared::ring_buffer::RingBuffer;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimelineKind {
     System,
+    Ai,
     Command,
     Log,
     Approval,
@@ -32,4 +33,3 @@ impl TimelineState {
         }
     }
 }
-

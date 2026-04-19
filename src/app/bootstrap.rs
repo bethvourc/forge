@@ -1,3 +1,4 @@
+use crate::ai::AiRuntime;
 use crate::app::AppStore;
 use crate::config::{load_config, CliArgs};
 use crate::domain::{AppState, GitSnapshot, ProjectContext, TimelineKind};
@@ -36,6 +37,6 @@ pub async fn bootstrap(cli: CliArgs) -> AppResult<Runtime> {
 
     let store = AppStore::new(state);
     let terminal = TerminalUi::new()?;
-    Ok(Runtime::new(store, terminal, observability))
+    let ai_runtime = AiRuntime::from_config(&loaded.config.ai);
+    Ok(Runtime::new(store, terminal, observability, ai_runtime))
 }
-

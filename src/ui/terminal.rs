@@ -51,4 +51,3 @@ pub fn restore_terminal() -> AppResult<()> {
     execute!(stdout, LeaveAlternateScreen)?;
     Ok(())
 }
-

@@ -56,4 +56,3 @@ pub struct ApprovalState {
     pub pending: Vec<ApprovalRequest>,
     pub history: Vec<ApprovalDecision>,
 }
-

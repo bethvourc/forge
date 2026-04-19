@@ -26,4 +26,3 @@ pub struct TestRunRecord {
 pub struct TestState {
     pub recent_runs: Vec<TestRunRecord>,
 }
-

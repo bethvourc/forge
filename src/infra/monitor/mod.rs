@@ -4,4 +4,3 @@ pub fn service_name_from_command(raw: &str) -> String {
         .unwrap_or("service")
         .to_string()
 }
-

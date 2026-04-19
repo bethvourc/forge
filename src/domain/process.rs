@@ -28,4 +28,3 @@ pub struct ProcessSnapshot {
 pub struct ProcessState {
     pub snapshots: Vec<ProcessSnapshot>,
 }
-

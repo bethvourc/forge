@@ -12,15 +12,19 @@ pub mod service;
 pub mod test;
 pub mod timeline;
 
-pub use ai::AiSessionState;
+pub use ai::{
+    AiActionProposal, AiCitation, AiCommandContext, AiContextBundle, AiGitContext, AiLogContext,
+    AiMessage, AiMessageRole, AiProjectContext, AiRequest, AiRequestKind, AiResponse,
+    AiServiceContext, AiSessionState, AiStatus, AiTestContext, AiTimelineContext, AiUiContext,
+};
 pub use app::{
-    AppMetaState, AppState, DashboardTab, FocusTarget, ModalState, Notification,
-    NotificationLevel, NotificationState, UiState,
+    AppMetaState, AppState, DashboardTab, FocusTarget, ModalState, Notification, NotificationLevel,
+    NotificationState, UiState,
 };
 pub use approval::{ApprovalDecision, ApprovalMode, ApprovalRequest, ApprovalState, SafetyClass};
 pub use command::{
-    CommandProvenance, CommandRecord, CommandState, CommandStatus, ExecutionMode,
-    ExecutionRequest, OutputStream,
+    CommandProvenance, CommandRecord, CommandState, CommandStatus, ExecutionMode, ExecutionRequest,
+    OutputStream,
 };
 pub use diagnostics::{DiagnosticLevel, DiagnosticRecord, DiagnosticsState};
 pub use git::GitSnapshot;
@@ -31,4 +35,3 @@ pub use project::ProjectContext;
 pub use service::{ServiceHealth, ServiceRecord, ServiceSource, ServiceState};
 pub use test::{TestRunRecord, TestState, TestStatus};
 pub use timeline::{TimelineEntry, TimelineKind, TimelineState};
-

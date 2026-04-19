@@ -1,10 +1,8 @@
 use std::path::PathBuf;
 
-use crate::domain::{
-    ApprovalRequest, DiagnosticLevel, GitSnapshot, OutputStream, ProjectContext,
-};
-use crate::domain::ExecutionRequest;
-use crate::shared::ids::{ApprovalId, CommandId, JobId, ServiceId};
+use crate::domain::{AiRequest, AiResponse, ExecutionRequest};
+use crate::domain::{ApprovalRequest, DiagnosticLevel, GitSnapshot, OutputStream, ProjectContext};
+use crate::shared::ids::{AiRequestId, ApprovalId, CommandId, JobId, ServiceId};
 
 #[derive(Debug, Clone)]
 pub enum UiIntent {
@@ -37,6 +35,16 @@ pub enum AppAction {
 pub enum AppEvent {
     ProjectScanned(ProjectContext),
     GitRefreshed(GitSnapshot),
+    AiStarted {
+        request_id: AiRequestId,
+        provider: String,
+    },
+    AiCompleted(AiResponse),
+    AiFailed {
+        request_id: AiRequestId,
+        provider: String,
+        message: String,
+    },
     CommandStarted {
         command_id: CommandId,
         job_id: JobId,
@@ -71,6 +79,7 @@ pub enum AppEvent {
 
 #[derive(Debug, Clone)]
 pub enum Effect {
+    RunAiRequest(Box<AiRequest>),
     ExecuteCommand(ExecutionRequest),
     CancelCommand(CommandId),
     RefreshProjectContext(PathBuf),

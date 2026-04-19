@@ -4,11 +4,11 @@ use crate::ai;
 use crate::app::{AppAction, AppEvent, Effect, UiIntent};
 use crate::commands::{parse_input, ParsedInput};
 use crate::domain::{
-    AppState, ApprovalDecision, ApprovalMode, ApprovalRequest, CommandRecord, CommandStatus,
-    DashboardTab, DiagnosticLevel, DiagnosticRecord, ExecutionMode, ExecutionRequest, FocusTarget,
-    GitSnapshot, JobRecord, JobStatus, LogEntry, LogSeverity, LogSource, LogStream, ModalState,
-    Notification, NotificationLevel, OutputStream, ProcessSnapshot, ProcessStatus, ProjectContext,
-    ServiceHealth, ServiceRecord, ServiceSource, TimelineEntry, TimelineKind,
+    AiMessage, AiMessageRole, AiRequest, AiRequestKind, AiStatus, AppState, ApprovalDecision,
+    ApprovalMode, ApprovalRequest, CommandRecord, CommandStatus, DashboardTab, DiagnosticLevel,
+    DiagnosticRecord, ExecutionMode, ExecutionRequest, FocusTarget, JobRecord, JobStatus,
+    ModalState, Notification, NotificationLevel, ProcessSnapshot, ProcessStatus, ServiceHealth,
+    ServiceRecord, ServiceSource, TimelineEntry, TimelineKind,
 };
 use crate::safety::{approval_message, approval_mode_for, classify_command};
 use crate::shared::ids::{ApprovalId, CommandId, IdGenerator};
@@ -63,6 +63,62 @@ impl AppStore {
             AppEvent::GitRefreshed(snapshot) => {
                 self.state.git = snapshot;
             }
+            AppEvent::AiStarted {
+                request_id,
+                provider,
+            } => {
+                self.state.ai.status = AiStatus::Running;
+                self.state.ai.active_request = Some(request_id);
+                self.append_timeline(
+                    TimelineKind::Ai,
+                    format!("AI request #{request_id} started via {provider}"),
+                );
+            }
+            AppEvent::AiCompleted(response) => {
+                let request_id = response.request_id;
+                let summary = truncate_for_timeline(&response.summary, 96);
+                let history_limit = self.state.config.ai.history_limit;
+                self.state.ai.status = AiStatus::Completed;
+                self.state.ai.active_request = None;
+                self.state.ai.last_error = None;
+                self.state.ai.last_response = Some(response.clone());
+                self.state.ai.push_message(
+                    AiMessage {
+                        role: AiMessageRole::Assistant,
+                        content: response.message.clone(),
+                        created_at: now_utc(),
+                    },
+                    history_limit,
+                );
+                self.append_timeline(
+                    TimelineKind::Ai,
+                    format!("AI response ready for request #{request_id}: {summary}"),
+                );
+                self.push_notification(
+                    NotificationLevel::Info,
+                    format!("AI response ready for request #{request_id}"),
+                );
+            }
+            AppEvent::AiFailed {
+                request_id,
+                provider,
+                message,
+            } => {
+                self.state.ai.status = AiStatus::Failed;
+                self.state.ai.active_request = None;
+                self.state.ai.last_error = Some(message.clone());
+                self.append_timeline(
+                    TimelineKind::Ai,
+                    format!(
+                        "AI request #{request_id} failed via {provider}: {}",
+                        truncate_for_timeline(&message, 96)
+                    ),
+                );
+                self.push_notification(
+                    NotificationLevel::Warn,
+                    format!("AI request #{request_id} failed: {message}"),
+                );
+            }
             AppEvent::CommandStarted {
                 command_id,
                 job_id,
@@ -112,7 +168,10 @@ impl AppStore {
                 self.state.commands.active_command = Some(command_id);
                 self.append_timeline(
                     TimelineKind::Command,
-                    format!("command #{command_id} started{}", pid.map(|pid| format!(" (pid {pid})")).unwrap_or_default()),
+                    format!(
+                        "command #{command_id} started{}",
+                        pid.map(|pid| format!(" (pid {pid})")).unwrap_or_default()
+                    ),
                 );
             }
             AppEvent::CommandOutput {
@@ -140,7 +199,9 @@ impl AppStore {
                     .logs
                     .per_source
                     .entry(source_key)
-                    .or_insert_with(|| crate::shared::ring_buffer::RingBuffer::new(per_source_capacity))
+                    .or_insert_with(|| {
+                        crate::shared::ring_buffer::RingBuffer::new(per_source_capacity)
+                    })
                     .push(log_entry.clone());
                 self.append_timeline(
                     TimelineKind::Log,
@@ -185,7 +246,14 @@ impl AppStore {
                         service.last_seen = now_utc();
                     }
                 }
-                self.mark_process(command_id, if succeeded { ProcessStatus::Exited } else { ProcessStatus::Failed });
+                self.mark_process(
+                    command_id,
+                    if succeeded {
+                        ProcessStatus::Exited
+                    } else {
+                        ProcessStatus::Failed
+                    },
+                );
                 self.state.commands.active_command = None;
                 self.append_timeline(
                     TimelineKind::Command,
@@ -257,22 +325,36 @@ impl AppStore {
     fn handle_ui_intent(&mut self, intent: UiIntent) -> Vec<Effect> {
         match intent {
             UiIntent::KeyChar(c) => {
-                if self.state.ui.modal.is_some() {
+                if let Some(ModalState::Approval(_)) = self.state.ui.modal.as_ref() {
                     match c {
-                        'y' | 'Y' => return self.dispatch_action(AppAction::Ui(UiIntent::ApproveCurrent)),
-                        'n' | 'N' => return self.dispatch_action(AppAction::Ui(UiIntent::DenyCurrent)),
-                        _ => {}
+                        'y' | 'Y' => {
+                            return self.dispatch_action(AppAction::Ui(UiIntent::ApproveCurrent))
+                        }
+                        'n' | 'N' => {
+                            return self.dispatch_action(AppAction::Ui(UiIntent::DenyCurrent))
+                        }
+                        _ => return Vec::new(),
                     }
                 } else if matches!(self.state.ui.focus, FocusTarget::CommandPane) {
                     self.state.ui.input_buffer.push(c);
+                } else if self.state.ui.modal.is_some() {
+                    return Vec::new();
                 }
             }
             UiIntent::Backspace => {
                 self.state.ui.input_buffer.pop();
             }
             UiIntent::Submit => {
-                if self.state.ui.modal.is_some() {
-                    return self.dispatch_action(AppAction::Ui(UiIntent::ApproveCurrent));
+                if let Some(modal) = self.state.ui.modal.as_ref() {
+                    return match modal {
+                        ModalState::Approval(_) => {
+                            self.dispatch_action(AppAction::Ui(UiIntent::ApproveCurrent))
+                        }
+                        ModalState::Help | ModalState::Error(_) => {
+                            self.close_modal();
+                            Vec::new()
+                        }
+                    };
                 }
 
                 if self.state.ui.input_buffer.trim().is_empty() {
@@ -321,14 +403,15 @@ impl AppStore {
             UiIntent::ApproveCurrent => {
                 if let Some(approval_id) = self.current_approval_id() {
                     return self.dispatch_action(AppAction::Approve(approval_id));
+                } else if self.state.ui.modal.is_some() {
+                    self.close_modal();
                 }
             }
             UiIntent::DenyCurrent => {
                 if let Some(approval_id) = self.current_approval_id() {
                     return self.dispatch_action(AppAction::Deny(approval_id));
                 }
-                self.state.ui.modal = None;
-                self.state.ui.focus = FocusTarget::CommandPane;
+                self.close_modal();
             }
             UiIntent::Resize(width, height) => {
                 self.state.ui.terminal_size = (width, height);
@@ -336,11 +419,13 @@ impl AppStore {
             UiIntent::Tick => {
                 self.state.app.tick_count += 1;
                 let mut effects = Vec::new();
-                if self.state.config.git.enabled && self.state.app.tick_count % 50 == 0 {
+                if self.state.config.git.enabled && self.state.app.tick_count.is_multiple_of(50) {
                     effects.push(Effect::RefreshGit(self.state.project.root.clone()));
                 }
-                if self.state.app.tick_count % 100 == 0 {
-                    effects.push(Effect::RefreshProjectContext(self.state.project.root.clone()));
+                if self.state.app.tick_count.is_multiple_of(100) {
+                    effects.push(Effect::RefreshProjectContext(
+                        self.state.project.root.clone(),
+                    ));
                 }
                 return effects;
             }
@@ -350,7 +435,16 @@ impl AppStore {
             }
             UiIntent::Esc => {
                 if self.state.ui.modal.is_some() {
-                    return self.dispatch_action(AppAction::Ui(UiIntent::DenyCurrent));
+                    return match self.state.ui.modal.as_ref() {
+                        Some(ModalState::Approval(_)) => {
+                            self.dispatch_action(AppAction::Ui(UiIntent::DenyCurrent))
+                        }
+                        Some(ModalState::Help) | Some(ModalState::Error(_)) => {
+                            self.close_modal();
+                            Vec::new()
+                        }
+                        None => Vec::new(),
+                    };
                 }
                 self.state.ui.input_buffer.clear();
             }
@@ -370,7 +464,10 @@ impl AppStore {
                 self.state.ui.input_buffer.clear();
                 self.state.logs.recent.clear();
                 self.state.logs.per_source.clear();
-                self.append_timeline(TimelineKind::System, "cleared command input and visible log buffer".to_string());
+                self.append_timeline(
+                    TimelineKind::System,
+                    "cleared command input and visible log buffer".to_string(),
+                );
                 Vec::new()
             }
             ParsedInput::NextTab => {
@@ -385,7 +482,10 @@ impl AppStore {
                 if let Some(approval_id) = self.current_approval_id() {
                     self.dispatch_action(AppAction::Approve(approval_id))
                 } else {
-                    self.push_notification(NotificationLevel::Info, "no pending approvals".to_string());
+                    self.push_notification(
+                        NotificationLevel::Info,
+                        "no pending approvals".to_string(),
+                    );
                     Vec::new()
                 }
             }
@@ -393,27 +493,71 @@ impl AppStore {
                 if let Some(approval_id) = self.current_approval_id() {
                     self.dispatch_action(AppAction::Deny(approval_id))
                 } else {
-                    self.push_notification(NotificationLevel::Info, "no pending approvals".to_string());
+                    self.push_notification(
+                        NotificationLevel::Info,
+                        "no pending approvals".to_string(),
+                    );
                     Vec::new()
                 }
             }
             ParsedInput::Cancel(command_id) => self.dispatch_action(AppAction::Cancel(command_id)),
             ParsedInput::Help => {
-                self.push_notification(
-                    NotificationLevel::Info,
-                    "slash commands: /help, /bg <cmd>, /cancel <id>, /approve, /deny, /tab next, /tab prev, /quit"
-                        .to_string(),
-                );
+                self.state.ui.modal = Some(ModalState::Help);
+                self.state.ui.focus = FocusTarget::Modal;
+                self.append_timeline(TimelineKind::System, "opened help reference".to_string());
                 Vec::new()
             }
-            ParsedInput::AiPrompt(prompt) => {
-                let message = ai::unavailable_message(&prompt);
-                self.state.ai.last_error = Some(message.clone());
-                self.push_notification(NotificationLevel::Info, message.clone());
-                self.append_timeline(TimelineKind::System, message);
-                Vec::new()
-            }
+            ParsedInput::AiPrompt { prompt, kind } => self.prepare_ai_request(prompt, kind),
         }
+    }
+
+    fn prepare_ai_request(&mut self, prompt: String, kind: AiRequestKind) -> Vec<Effect> {
+        if !self.state.ai.enabled {
+            let message = "AI is disabled in the current Forge configuration.".to_string();
+            self.state.ai.status = AiStatus::Disabled;
+            self.state.ai.last_error = Some(message.clone());
+            self.push_notification(NotificationLevel::Warn, message.clone());
+            self.append_timeline(TimelineKind::Ai, message);
+            return Vec::new();
+        }
+
+        let request = AiRequest {
+            id: self.ids.next_ai_request(),
+            kind,
+            prompt: prompt.clone(),
+            created_at: now_utc(),
+            provider: self.state.ai.provider.clone(),
+            model: self.state.ai.model.clone(),
+            context: ai::build_context(&self.state),
+        };
+
+        let history_limit = self.state.config.ai.history_limit;
+        self.state.ai.status = AiStatus::Queued;
+        self.state.ai.push_request(request.clone(), history_limit);
+        self.state.ai.push_message(
+            AiMessage {
+                role: AiMessageRole::User,
+                content: prompt.clone(),
+                created_at: now_utc(),
+            },
+            history_limit,
+        );
+        self.state.ai.active_request = Some(request.id);
+        self.state.ai.last_error = None;
+        self.append_timeline(
+            TimelineKind::Ai,
+            format!(
+                "queued AI {} request #{}: {}",
+                kind.label().to_ascii_lowercase(),
+                request.id,
+                truncate_for_timeline(&prompt, 96)
+            ),
+        );
+        self.push_notification(
+            NotificationLevel::Info,
+            format!("queued AI {} request", kind.label().to_ascii_lowercase()),
+        );
+        vec![Effect::RunAiRequest(Box::new(request))]
     }
 
     fn prepare_execution(
@@ -448,7 +592,8 @@ impl AppStore {
 
         self.state.commands.history.push(raw.clone());
         if self.state.commands.history.len() > self.state.config.commands.history_limit {
-            let overflow = self.state.commands.history.len() - self.state.config.commands.history_limit;
+            let overflow =
+                self.state.commands.history.len() - self.state.config.commands.history_limit;
             self.state.commands.history.drain(0..overflow);
         }
 
@@ -477,15 +622,16 @@ impl AppStore {
                 summary: raw.clone(),
                 detail: format!(
                     "{} action classified as {}",
-                    if background { "background" } else { "foreground" },
+                    if background {
+                        "background"
+                    } else {
+                        "foreground"
+                    },
                     safety_class.label()
                 ),
                 execution: request,
             };
-            self.append_timeline(
-                TimelineKind::Approval,
-                approval_message(&approval),
-            );
+            self.append_timeline(TimelineKind::Approval, approval_message(&approval));
             if matches!(approval.mode, ApprovalMode::ModalConfirm) {
                 self.state.ui.modal = Some(ModalState::Approval(approval.id));
                 self.state.ui.focus = FocusTarget::Modal;
@@ -496,7 +642,10 @@ impl AppStore {
 
         self.append_timeline(
             TimelineKind::Command,
-            format!("queued command #{command_id}: {}", truncate_for_timeline(&raw, 96)),
+            format!(
+                "queued command #{command_id}: {}",
+                truncate_for_timeline(&raw, 96)
+            ),
         );
         vec![Effect::ExecuteCommand(request)]
     }
@@ -550,10 +699,18 @@ impl AppStore {
     }
 
     fn current_approval_id(&self) -> Option<ApprovalId> {
-        if let Some(ModalState::Approval(id)) = self.state.ui.modal.as_ref() {
-            return Some(*id);
+        if let Some(modal) = self.state.ui.modal.as_ref() {
+            return match modal {
+                ModalState::Approval(id) => Some(*id),
+                ModalState::Help | ModalState::Error(_) => None,
+            };
         }
         self.current_inline_approval_id()
+    }
+
+    fn close_modal(&mut self) {
+        self.state.ui.modal = None;
+        self.state.ui.focus = FocusTarget::CommandPane;
     }
 
     fn current_inline_approval_id(&self) -> Option<ApprovalId> {
@@ -604,15 +761,27 @@ impl AppStore {
     }
 
     fn find_command(&self, id: CommandId) -> Option<&CommandRecord> {
-        self.state.commands.records.iter().find(|record| record.id == id)
+        self.state
+            .commands
+            .records
+            .iter()
+            .find(|record| record.id == id)
     }
 
     fn find_command_mut(&mut self, id: CommandId) -> Option<&mut CommandRecord> {
-        self.state.commands.records.iter_mut().find(|record| record.id == id)
+        self.state
+            .commands
+            .records
+            .iter_mut()
+            .find(|record| record.id == id)
     }
 
     fn find_job_mut(&mut self, id: crate::shared::ids::JobId) -> Option<&mut JobRecord> {
-        self.state.jobs.records.iter_mut().find(|record| record.id == id)
+        self.state
+            .jobs
+            .records
+            .iter_mut()
+            .find(|record| record.id == id)
     }
 
     fn find_job_by_command_mut(&mut self, id: CommandId) -> Option<&mut JobRecord> {

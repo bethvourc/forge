@@ -41,8 +41,7 @@ pub fn init_observability(
 
     let subscriber = tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_new(config.log_level.clone())
-                .unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_new(config.log_level.clone()).unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .with_ansi(false)
         .finish();
@@ -61,4 +60,3 @@ pub fn install_panic_hook() {
         previous(info);
     }));
 }
-

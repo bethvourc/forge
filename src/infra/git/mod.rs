@@ -11,7 +11,11 @@ pub fn snapshot_git(root: &Path) -> AppResult<GitSnapshot> {
     let status = run_git(root, &["status", "--porcelain"])?;
     let changed_files = status
         .lines()
-        .filter_map(|line| line.get(3..).map(str::trim).filter(|value| !value.is_empty()))
+        .filter_map(|line| {
+            line.get(3..)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
         .map(ToString::to_string)
         .collect::<Vec<_>>();
 
@@ -46,4 +50,3 @@ fn run_git(root: &Path, args: &[&str]) -> AppResult<String> {
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
-

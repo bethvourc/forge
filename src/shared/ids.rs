@@ -3,7 +3,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 macro_rules! define_id {
     ($name:ident) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+        #[derive(
+            Debug,
+            Clone,
+            Copy,
+            PartialEq,
+            Eq,
+            PartialOrd,
+            Ord,
+            Hash,
+            serde::Serialize,
+            serde::Deserialize,
+        )]
         pub struct $name(pub u64);
 
         impl Display for $name {
@@ -15,6 +26,7 @@ macro_rules! define_id {
 }
 
 define_id!(ApprovalId);
+define_id!(AiRequestId);
 define_id!(CommandId);
 define_id!(JobId);
 define_id!(LogId);
@@ -63,6 +75,10 @@ impl IdGenerator {
         ApprovalId(self.next_raw())
     }
 
+    pub fn next_ai_request(&self) -> AiRequestId {
+        AiRequestId(self.next_raw())
+    }
+
     pub fn next_process(&self) -> ProcessId {
         ProcessId(self.next_raw())
     }
@@ -71,4 +87,3 @@ impl IdGenerator {
         NotificationId(self.next_raw())
     }
 }
-

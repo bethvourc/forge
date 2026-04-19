@@ -91,4 +91,3 @@ pub struct CommandState {
     pub records: Vec<CommandRecord>,
     pub active_command: Option<CommandId>,
 }
-

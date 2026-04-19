@@ -36,4 +36,3 @@ pub struct ServiceRecord {
 pub struct ServiceState {
     pub registry: Vec<ServiceRecord>,
 }
-

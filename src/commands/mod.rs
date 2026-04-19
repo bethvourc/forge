@@ -1,4 +1,4 @@
-use crate::domain::CommandProvenance;
+use crate::domain::{AiRequestKind, CommandProvenance};
 use crate::shared::ids::CommandId;
 
 #[derive(Debug, Clone)]
@@ -16,7 +16,10 @@ pub enum ParsedInput {
     DenyPending,
     Cancel(CommandId),
     Help,
-    AiPrompt(String),
+    AiPrompt {
+        prompt: String,
+        kind: AiRequestKind,
+    },
 }
 
 pub fn parse_input(input: &str) -> Result<ParsedInput, String> {
@@ -70,10 +73,16 @@ pub fn parse_input(input: &str) -> Result<ParsedInput, String> {
         return Ok(ParsedInput::Cancel(CommandId(id)));
     }
     if let Some(rest) = trimmed.strip_prefix("/ai ") {
-        return Ok(ParsedInput::AiPrompt(rest.trim().to_string()));
+        return Ok(ParsedInput::AiPrompt {
+            prompt: rest.trim().to_string(),
+            kind: AiRequestKind::Assist,
+        });
     }
     if let Some(rest) = trimmed.strip_prefix("/diagnose ") {
-        return Ok(ParsedInput::AiPrompt(rest.trim().to_string()));
+        return Ok(ParsedInput::AiPrompt {
+            prompt: rest.trim().to_string(),
+            kind: AiRequestKind::Diagnose,
+        });
     }
 
     Err(format!("unknown slash command: {trimmed}"))
@@ -86,4 +95,3 @@ fn parse_shell(input: &str) -> (String, bool) {
     }
     (trimmed.to_string(), false)
 }
-

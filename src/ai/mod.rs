@@ -1,6 +1,6 @@
-pub fn unavailable_message(prompt: &str) -> String {
-    format!(
-        "AI provider is not configured yet. Request captured but not executed: {}",
-        prompt.trim()
-    )
-}
+mod context;
+mod provider;
+mod providers;
+
+pub use context::build_context;
+pub use provider::{AiProvider, AiRuntime};

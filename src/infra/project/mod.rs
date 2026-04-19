@@ -29,7 +29,10 @@ pub fn scan_project(
         root.join("package.json"),
     ] {
         if candidate.exists() {
-            if candidate.file_name().is_some_and(|name| name == "Cargo.toml") {
+            if candidate
+                .file_name()
+                .is_some_and(|name| name == "Cargo.toml")
+            {
                 stack_hints.push("rust".to_string());
             }
             if candidate
@@ -83,4 +86,3 @@ fn find_project_root(start_dir: &Path) -> Option<PathBuf> {
     }
     Some(start_dir.to_path_buf())
 }
-
