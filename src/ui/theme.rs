@@ -2,20 +2,20 @@ use ratatui::style::{Color, Modifier, Style};
 
 use crate::domain::{LogSeverity, NotificationLevel, ServiceHealth, TimelineKind};
 
-pub const BG_BASE: Color = Color::Rgb(14, 16, 18);
-pub const BG_ELEVATED: Color = Color::Rgb(22, 25, 27);
-pub const BG_PANEL: Color = Color::Rgb(28, 31, 35);
-pub const BG_SELECTION: Color = Color::Rgb(63, 47, 24);
-pub const PANEL_BORDER: Color = Color::Rgb(104, 95, 79);
-pub const PANEL_FOCUS: Color = Color::Rgb(224, 167, 77);
-pub const TEXT_PRIMARY: Color = Color::Rgb(240, 234, 223);
-pub const TEXT_MUTED: Color = Color::Rgb(176, 166, 148);
-pub const TEXT_SUBTLE: Color = Color::Rgb(118, 111, 99);
-pub const ACCENT: Color = Color::Rgb(224, 167, 77);
-pub const SUCCESS: Color = Color::Rgb(141, 185, 118);
-pub const WARN: Color = Color::Rgb(238, 198, 96);
-pub const ERROR: Color = Color::Rgb(221, 117, 96);
-pub const INFO: Color = Color::Rgb(116, 183, 170);
+pub const BG_BASE: Color = Color::Rgb(10, 15, 23);
+pub const BG_ELEVATED: Color = Color::Rgb(17, 24, 34);
+pub const BG_PANEL: Color = Color::Rgb(22, 31, 44);
+pub const BG_SELECTION: Color = Color::Rgb(24, 56, 64);
+pub const PANEL_BORDER: Color = Color::Rgb(69, 88, 108);
+pub const PANEL_FOCUS: Color = Color::Rgb(104, 212, 201);
+pub const TEXT_PRIMARY: Color = Color::Rgb(232, 238, 245);
+pub const TEXT_MUTED: Color = Color::Rgb(164, 179, 193);
+pub const TEXT_SUBTLE: Color = Color::Rgb(111, 125, 140);
+pub const ACCENT: Color = Color::Rgb(104, 212, 201);
+pub const SUCCESS: Color = Color::Rgb(148, 210, 127);
+pub const WARN: Color = Color::Rgb(237, 182, 74);
+pub const ERROR: Color = Color::Rgb(230, 113, 106);
+pub const INFO: Color = Color::Rgb(114, 167, 255);
 
 pub fn pane_border(focused: bool) -> Style {
     Style::default().fg(if focused { PANEL_FOCUS } else { PANEL_BORDER })
@@ -32,9 +32,7 @@ pub fn panel_title(focused: bool) -> Style {
 }
 
 pub fn section_title() -> Style {
-    Style::default()
-        .fg(ACCENT)
-        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
 }
 
 pub fn primary() -> Style {
@@ -63,7 +61,7 @@ pub fn status_badge(bg: Color) -> Style {
 pub fn keycap() -> Style {
     Style::default()
         .fg(TEXT_PRIMARY)
-        .bg(BG_PANEL)
+        .bg(BG_ELEVATED)
         .add_modifier(Modifier::BOLD)
 }
 
