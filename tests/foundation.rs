@@ -6,8 +6,8 @@ use forge::commands::{parse_input, slash_command_suggestions, ParsedInput};
 use forge::config::ForgeConfig;
 use forge::domain::{
     AiActionProposal, AiRequestKind, AiResponse, AppState, ApprovalMode, CommandProvenance,
-    CommandStatus, DashboardTab, FocusTarget, GitSnapshot, LogEntry, LogSeverity, LogSource,
-    LogStream, ModalState, ProjectContext, SafetyClass,
+    CommandStatus, DashboardTab, FocusTarget, GitSnapshot, InputMode, LogEntry, LogSeverity,
+    LogSource, LogStream, ModalState, ProjectContext, SafetyClass,
 };
 use forge::safety::classify_command;
 use forge::shared::ids::{AiRequestId, CommandId, LogId};
@@ -282,14 +282,14 @@ fn store_accepts_slash_command_suggestion_into_input() {
     store.dispatch_action(AppAction::Ui(forge::app::UiIntent::KeyChar('d')));
     store.dispatch_action(AppAction::Ui(forge::app::UiIntent::AcceptCommandSuggestion));
 
-    assert_eq!(store.state().ui.input_buffer, "/diagnose ");
+    assert_eq!(store.state().ui.input.buffer, "/diagnose ");
     assert_eq!(store.state().ui.command_palette_cursor, 0);
 }
 
 #[test]
 fn store_clear_resets_input_and_visible_logs() {
     let mut store = test_store();
-    store.state_mut().ui.input_buffer = "pwd".to_string();
+    store.state_mut().ui.input.set_buffer("pwd".to_string());
     store.state_mut().logs.recent.push(LogEntry {
         id: LogId(1),
         ts: SystemTime::now(),
@@ -305,8 +305,39 @@ fn store_clear_resets_input_and_visible_logs() {
     let effects = store.dispatch_action(AppAction::ParsedInput(ParsedInput::Clear));
 
     assert!(effects.is_empty());
-    assert!(store.state().ui.input_buffer.is_empty());
+    assert!(store.state().ui.input.buffer.is_empty());
     assert!(store.state().logs.recent.is_empty());
+}
+
+#[test]
+fn store_submits_plain_prompt_in_ai_mode() {
+    let mut store = test_store();
+    store.state_mut().ui.input.set_mode(InputMode::AiAssist);
+    store
+        .state_mut()
+        .ui
+        .input
+        .set_buffer("summarize the latest failure".to_string());
+
+    let effects = store.dispatch_action(AppAction::Ui(forge::app::UiIntent::Submit));
+
+    assert!(matches!(effects.as_slice(), [Effect::RunAiRequest(_)]));
+    assert_eq!(store.state().ai.requests.len(), 1);
+    assert!(matches!(
+        store.state().ai.requests[0].kind,
+        AiRequestKind::Assist
+    ));
+}
+
+#[test]
+fn store_recalls_shell_history() {
+    let mut store = test_store();
+    store.state_mut().commands.history = vec!["pwd".to_string(), "cargo test".to_string()];
+    store.dispatch_action(AppAction::Ui(forge::app::UiIntent::RecallPreviousHistory));
+    assert_eq!(store.state().ui.input.buffer, "cargo test");
+
+    store.dispatch_action(AppAction::Ui(forge::app::UiIntent::RecallNextHistory));
+    assert!(store.state().ui.input.buffer.is_empty());
 }
 
 #[test]

@@ -1,7 +1,7 @@
 use ratatui::layout::Rect;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Padding, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::domain::{AppState, DashboardTab, ProcessStatus};
@@ -10,10 +10,11 @@ use crate::ui::theme;
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState, focused: bool) {
     let block = Block::default()
-        .title(Span::styled(" Ops Surface ", theme::panel_title(focused)))
+        .title(Span::styled(" Operations ", theme::panel_title(focused)))
         .borders(Borders::ALL)
         .border_style(theme::pane_border(focused))
-        .style(theme::panel_surface(focused));
+        .style(theme::panel_surface(focused))
+        .padding(Padding::horizontal(1));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -26,8 +27,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState, focused: bool
         ])
         .split(inner);
 
-    render_tabs(frame, sections[0], state);
-    render_context(frame, sections[1], state);
+    render_overview(frame, sections[0], state);
+    render_tabs(frame, sections[1], state);
 
     let lines = match state.ui.dashboard_tab {
         DashboardTab::Services => services_lines(state),
@@ -48,7 +49,10 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState, focused: bool
 fn services_lines(state: &AppState) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(vec![
         Span::styled("Managed services", theme::section_title()),
-        Span::styled("  background jobs and long-lived processes", theme::muted()),
+        Span::styled(
+            "  long-lived jobs with health and PID visibility",
+            theme::muted(),
+        ),
     ])];
     if state.services.registry.is_empty() {
         lines.push(Line::raw(""));
@@ -57,11 +61,11 @@ fn services_lines(state: &AppState) -> Vec<Line<'static>> {
             theme::primary(),
         )]));
         lines.push(Line::from(vec![
-            Span::styled("Try ", theme::muted()),
-            Span::styled("sleep 30 &", theme::accent()),
-            Span::styled(" or ", theme::muted()),
+            Span::styled("Launch one with ", theme::muted()),
             Span::styled("/bg cargo run", theme::accent()),
-            Span::styled(" to create one.", theme::muted()),
+            Span::styled(" or any shell command that ends with ", theme::muted()),
+            Span::styled("&", theme::accent()),
+            Span::styled(".", theme::muted()),
         ]));
         return lines;
     }
@@ -69,13 +73,13 @@ fn services_lines(state: &AppState) -> Vec<Line<'static>> {
     for service in state.services.registry.iter().rev().take(12) {
         let health = format!("{:?}", service.health).to_lowercase();
         lines.push(Line::from(vec![
-            Span::styled(format!("#{} ", service.id), theme::accent()),
+            Span::styled(format!("#{: <3}", service.id), theme::accent()),
             Span::styled(
-                format!("[{health}] "),
+                format!(" {health} "),
                 theme::status_badge(theme::health_color(service.health)),
             ),
             Span::raw(" "),
-            Span::styled(service.name.clone(), theme::primary()),
+            Span::styled(truncate_end(&service.name, 28), theme::primary()),
             Span::raw(" "),
             Span::styled(format!("pid:{:?}", service.pid), theme::muted()),
         ]));
@@ -86,7 +90,10 @@ fn services_lines(state: &AppState) -> Vec<Line<'static>> {
 fn processes_lines(state: &AppState) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(vec![
         Span::styled("Tracked processes", theme::section_title()),
-        Span::styled("  active and recently completed jobs", theme::muted()),
+        Span::styled(
+            "  foreground work, background jobs, and recent exits",
+            theme::muted(),
+        ),
     ])];
     if state.processes.snapshots.is_empty() {
         lines.push(Line::raw(""));
@@ -95,7 +102,7 @@ fn processes_lines(state: &AppState) -> Vec<Line<'static>> {
             theme::primary(),
         )]));
         lines.push(Line::from(vec![Span::styled(
-            "Foreground and background commands populate this view.",
+            "Run commands in the deck and their lifecycle will accumulate here.",
             theme::muted(),
         )]));
         return lines;
@@ -117,9 +124,9 @@ fn processes_lines(state: &AppState) -> Vec<Line<'static>> {
             ProcessStatus::Cancelled => theme::WARN,
         };
         lines.push(Line::from(vec![
-            Span::styled(format!("[{status}] "), theme::status_badge(color)),
+            Span::styled(format!(" {status} "), theme::status_badge(color)),
             Span::raw(" "),
-            Span::styled(process.label.clone(), theme::primary()),
+            Span::styled(truncate_end(&process.label, 34), theme::primary()),
             Span::raw(" "),
             Span::styled(format!("pid:{:?}", process.pid), theme::muted()),
         ]));
@@ -130,7 +137,10 @@ fn processes_lines(state: &AppState) -> Vec<Line<'static>> {
 fn log_lines(state: &AppState) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(vec![
         Span::styled("Recent logs", theme::section_title()),
-        Span::styled("  newest entries first", theme::muted()),
+        Span::styled(
+            "  most recent entries first across tracked work",
+            theme::muted(),
+        ),
     ])];
     if state.logs.recent.is_empty() {
         lines.push(Line::raw(""));
@@ -139,7 +149,7 @@ fn log_lines(state: &AppState) -> Vec<Line<'static>> {
             theme::primary(),
         )]));
         lines.push(Line::from(vec![Span::styled(
-            "Run a command to start filling the log buffer.",
+            "Logs appear automatically once commands or services start producing output.",
             theme::muted(),
         )]));
         return lines;
@@ -157,11 +167,11 @@ fn log_lines(state: &AppState) -> Vec<Line<'static>> {
         lines.push(Line::from(vec![
             Span::styled(format!("{} ", format_timestamp(entry.ts)), theme::subtle()),
             Span::styled(
-                format!("[{level}] "),
+                format!(" {level} "),
                 theme::status_badge(theme::severity_color(entry.severity)),
             ),
             Span::raw(" "),
-            Span::styled(entry.raw.clone(), theme::primary()),
+            Span::styled(truncate_end(&entry.raw, 56), theme::primary()),
         ]));
     }
     lines
@@ -170,11 +180,12 @@ fn log_lines(state: &AppState) -> Vec<Line<'static>> {
 fn git_lines(state: &AppState) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(vec![
         Span::styled("Repository context", theme::section_title()),
-        Span::styled("  current branch and changed files", theme::muted()),
+        Span::styled("  branch, head, and working tree state", theme::muted()),
     ])];
     lines.push(Line::raw(""));
     lines.push(Line::from(vec![
-        Span::styled("Branch ", theme::muted()),
+        Span::styled("Branch", theme::label()),
+        Span::raw(" "),
         Span::styled(
             state
                 .git
@@ -185,7 +196,8 @@ fn git_lines(state: &AppState) -> Vec<Line<'static>> {
         ),
     ]));
     lines.push(Line::from(vec![
-        Span::styled("HEAD   ", theme::muted()),
+        Span::styled("Head", theme::label()),
+        Span::raw("   "),
         Span::styled(
             state
                 .git
@@ -196,20 +208,22 @@ fn git_lines(state: &AppState) -> Vec<Line<'static>> {
         ),
     ]));
     lines.push(Line::from(vec![
-        Span::styled("Status ", theme::muted()),
+        Span::styled("Status", theme::label()),
+        Span::raw(" "),
         Span::styled(
-            if state.git.is_dirty { "dirty" } else { "clean" },
+            format!(" {} ", if state.git.is_dirty { "dirty" } else { "clean" }),
             if state.git.is_dirty {
-                theme::accent()
+                theme::status_badge(theme::WARN)
             } else {
-                theme::muted()
+                theme::quiet_badge()
             },
         ),
     ]));
     lines.push(Line::raw(""));
     if state.git.changed_files.is_empty() {
         lines.push(Line::from(vec![
-            Span::styled("Changed files ", theme::muted()),
+            Span::styled("Changed files", theme::label()),
+            Span::raw(" "),
             Span::styled("none", theme::primary()),
         ]));
     } else {
@@ -220,7 +234,7 @@ fn git_lines(state: &AppState) -> Vec<Line<'static>> {
         for file in state.git.changed_files.iter().take(10) {
             lines.push(Line::from(vec![
                 Span::styled("• ", theme::accent()),
-                Span::styled(file.clone(), theme::primary()),
+                Span::styled(truncate_end(file, 56), theme::primary()),
             ]));
         }
     }
@@ -231,7 +245,7 @@ fn test_lines(state: &AppState) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(vec![
         Span::styled("Test runs", theme::section_title()),
         Span::styled(
-            "  normalized test results will accumulate here",
+            "  normalized pass/fail summaries across runners",
             theme::muted(),
         ),
     ])];
@@ -242,16 +256,18 @@ fn test_lines(state: &AppState) -> Vec<Line<'static>> {
             theme::primary(),
         )]));
         lines.push(Line::from(vec![Span::styled(
-            "Future adapters should normalize test results here.",
+            "Wire test adapters into Forge and their results will surface here.",
             theme::muted(),
         )]));
         return lines;
     }
 
     for run in state.tests.recent_runs.iter().rev().take(8) {
+        let status = format!("{:?}", run.status).to_ascii_lowercase();
         lines.push(Line::from(vec![
-            Span::styled(format!("[{:?}] ", run.status), theme::accent()),
-            Span::styled(run.runner.clone(), theme::primary()),
+            Span::styled(format!(" {status} "), theme::quiet_badge()),
+            Span::raw(" "),
+            Span::styled(truncate_end(&run.runner, 24), theme::primary()),
             Span::raw(" "),
             Span::styled(
                 format!("pass:{} fail:{}", run.pass_count, run.fail_count),
@@ -260,6 +276,61 @@ fn test_lines(state: &AppState) -> Vec<Line<'static>> {
         ]));
     }
     lines
+}
+
+fn render_overview(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let branch = state
+        .git
+        .branch
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("services", theme::label()),
+            Span::raw(" "),
+            Span::styled(state.services.registry.len().to_string(), theme::primary()),
+            Span::styled("  •  ", theme::subtle()),
+            Span::styled("processes", theme::label()),
+            Span::raw(" "),
+            Span::styled(
+                state.processes.snapshots.len().to_string(),
+                theme::primary(),
+            ),
+            Span::styled("  •  ", theme::subtle()),
+            Span::styled("logs", theme::label()),
+            Span::raw(" "),
+            Span::styled(state.logs.recent.len().to_string(), theme::primary()),
+            Span::styled("  •  ", theme::subtle()),
+            Span::styled("approvals", theme::label()),
+            Span::raw(" "),
+            Span::styled(state.approvals.pending.len().to_string(), theme::primary()),
+        ]),
+        Line::from(vec![
+            Span::styled("workspace", theme::quiet_badge()),
+            Span::raw(" "),
+            Span::styled(truncate_end(&branch, 24), theme::primary()),
+            Span::styled("  •  ", theme::subtle()),
+            Span::styled(
+                if state.git.is_dirty {
+                    "dirty tree"
+                } else {
+                    "clean tree"
+                },
+                if state.git.is_dirty {
+                    theme::warn_accent()
+                } else {
+                    theme::muted()
+                },
+            ),
+            Span::styled("  •  ", theme::subtle()),
+            Span::styled(
+                format!("{} changed file(s)", state.git.changed_files.len()),
+                theme::muted(),
+            ),
+        ]),
+    ];
+
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn render_tabs(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
@@ -271,7 +342,7 @@ fn render_tabs(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             if active {
                 Span::styled(label, theme::status_badge(theme::ACCENT))
             } else {
-                Span::styled(label, theme::muted())
+                Span::styled(label, theme::quiet_badge())
             }
         })
         .collect::<Vec<_>>();
@@ -288,42 +359,35 @@ fn render_tabs(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     content.push(Span::styled(" switch tabs", theme::muted()));
 
     frame.render_widget(
-        Paragraph::new(Line::from(content)).block(Block::default()),
+        Paragraph::new(vec![
+            Line::from(content),
+            Line::from(vec![Span::styled(
+                active_tab_summary(state.ui.dashboard_tab),
+                theme::subtle(),
+            )]),
+        ]),
         area,
     );
 }
 
-fn render_context(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    let summary = match state.ui.dashboard_tab {
-        DashboardTab::Services => {
-            format!("{} tracked services", state.services.registry.len())
-        }
-        DashboardTab::Processes => {
-            format!("{} process snapshots", state.processes.snapshots.len())
-        }
-        DashboardTab::Logs => {
-            format!("{} buffered log lines", state.logs.recent.len())
-        }
-        DashboardTab::Git => {
-            format!(
-                "branch {}  |  {} changed files",
-                state
-                    .git
-                    .branch
-                    .clone()
-                    .unwrap_or_else(|| "unknown".to_string()),
-                state.git.changed_files.len()
-            )
-        }
-        DashboardTab::Tests => {
-            format!("{} recorded test runs", state.tests.recent_runs.len())
-        }
-    };
+fn active_tab_summary(tab: DashboardTab) -> &'static str {
+    match tab {
+        DashboardTab::Services => "Long-lived services with health, PID, and launch visibility.",
+        DashboardTab::Processes => "Recent foreground and background command execution history.",
+        DashboardTab::Logs => "Unified log flow from commands and tracked services.",
+        DashboardTab::Git => "Working tree status, branch context, and changed files.",
+        DashboardTab::Tests => "Normalized runner outcomes as adapters come online.",
+    }
+}
 
-    let line = Line::from(vec![
-        Span::styled(state.ui.dashboard_tab.title(), theme::accent()),
-        Span::styled("  ", theme::muted()),
-        Span::styled(summary, theme::muted()),
-    ]);
-    frame.render_widget(Paragraph::new(line), area);
+fn truncate_end(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+
+    let kept = value
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect::<String>();
+    format!("{kept}…")
 }

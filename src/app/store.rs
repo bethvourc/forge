@@ -6,9 +6,9 @@ use crate::commands::{parse_input, parse_shell_input, slash_command_suggestions,
 use crate::domain::{
     AiActionProposal, AiMessage, AiMessageRole, AiRequest, AiRequestKind, AiStatus, AppState,
     ApprovalDecision, ApprovalMode, ApprovalRequest, CommandRecord, CommandStatus, DashboardTab,
-    DiagnosticLevel, DiagnosticRecord, ExecutionMode, ExecutionRequest, FocusTarget, JobRecord,
-    JobStatus, ModalState, Notification, NotificationLevel, ProcessSnapshot, ProcessStatus,
-    ServiceHealth, ServiceRecord, ServiceSource, TimelineEntry, TimelineKind,
+    DiagnosticLevel, DiagnosticRecord, ExecutionMode, ExecutionRequest, FocusTarget, InputMode,
+    JobRecord, JobStatus, ModalState, Notification, NotificationLevel, ProcessSnapshot,
+    ProcessStatus, ServiceHealth, ServiceRecord, ServiceSource, TimelineEntry, TimelineKind,
 };
 use crate::safety::{approval_message, approval_mode_for, classify_command};
 use crate::shared::ids::{ApprovalId, CommandId, IdGenerator};
@@ -350,15 +350,23 @@ impl AppStore {
                         _ => return Vec::new(),
                     }
                 } else if matches!(self.state.ui.focus, FocusTarget::CommandPane) {
-                    self.state.ui.input_buffer.push(c);
+                    self.state.ui.input.insert_char(c);
                     self.sync_command_palette_cursor();
                 } else if self.state.ui.modal.is_some() {
                     return Vec::new();
                 }
             }
             UiIntent::Backspace => {
-                self.state.ui.input_buffer.pop();
+                self.state.ui.input.backspace();
                 self.sync_command_palette_cursor();
+            }
+            UiIntent::InsertNewline => {
+                if matches!(self.state.ui.focus, FocusTarget::CommandPane)
+                    && self.state.ui.modal.is_none()
+                {
+                    self.state.ui.input.insert_newline();
+                    self.sync_command_palette_cursor();
+                }
             }
             UiIntent::Submit => {
                 if let Some(modal) = self.state.ui.modal.as_ref() {
@@ -373,16 +381,26 @@ impl AppStore {
                     };
                 }
 
-                if self.state.ui.input_buffer.trim().is_empty() {
+                if self.state.ui.input.is_empty_trimmed() {
                     if let Some(approval_id) = self.current_inline_approval_id() {
                         return self.dispatch_action(AppAction::Approve(approval_id));
                     }
                     return Vec::new();
                 }
 
-                let raw = std::mem::take(&mut self.state.ui.input_buffer);
+                let raw = self.state.ui.input.take_buffer();
                 self.state.ui.command_palette_cursor = 0;
-                match parse_input(&raw) {
+                let parsed = if raw.trim_start().starts_with('/') {
+                    parse_input(&raw)
+                } else if let Some(kind) = self.state.ui.input.mode.ai_kind() {
+                    Ok(ParsedInput::AiPrompt {
+                        prompt: raw.trim().to_string(),
+                        kind,
+                    })
+                } else {
+                    parse_input(&raw)
+                };
+                match parsed {
                     Ok(parsed) => return self.dispatch_action(AppAction::ParsedInput(parsed)),
                     Err(message) => {
                         self.push_notification(NotificationLevel::Warn, message.clone());
@@ -391,8 +409,50 @@ impl AppStore {
                 }
             }
             UiIntent::ClearInput => {
-                self.state.ui.input_buffer.clear();
+                self.state.ui.input.clear();
                 self.state.ui.command_palette_cursor = 0;
+            }
+            UiIntent::MoveCursorLeft => {
+                self.state.ui.input.move_left();
+                self.sync_command_palette_cursor();
+            }
+            UiIntent::MoveCursorRight => {
+                self.state.ui.input.move_right();
+                self.sync_command_palette_cursor();
+            }
+            UiIntent::MoveCursorUp => {
+                self.state.ui.input.move_up();
+                self.sync_command_palette_cursor();
+            }
+            UiIntent::MoveCursorDown => {
+                self.state.ui.input.move_down();
+                self.sync_command_palette_cursor();
+            }
+            UiIntent::MoveCursorHome => {
+                self.state.ui.input.move_home();
+                self.sync_command_palette_cursor();
+            }
+            UiIntent::MoveCursorEnd => {
+                self.state.ui.input.move_end();
+                self.sync_command_palette_cursor();
+            }
+            UiIntent::RecallPreviousHistory => {
+                self.recall_history(true);
+                self.sync_command_palette_cursor();
+            }
+            UiIntent::RecallNextHistory => {
+                self.recall_history(false);
+                self.sync_command_palette_cursor();
+            }
+            UiIntent::CycleInputMode => {
+                self.state.ui.input.cycle_mode();
+                self.push_notification(
+                    NotificationLevel::Info,
+                    format!(
+                        "input mode: {}",
+                        self.state.ui.input.mode.label().to_ascii_lowercase()
+                    ),
+                );
             }
             UiIntent::PrevCommandSuggestion => {
                 self.move_command_palette_cursor(false);
@@ -473,7 +533,7 @@ impl AppStore {
                         None => Vec::new(),
                     };
                 }
-                self.state.ui.input_buffer.clear();
+                self.state.ui.input.clear();
                 self.state.ui.command_palette_cursor = 0;
             }
         }
@@ -489,7 +549,7 @@ impl AppStore {
             } => self.prepare_execution(command, background, provenance),
             ParsedInput::Quit => self.dispatch_action(AppAction::Ui(UiIntent::Quit)),
             ParsedInput::Clear => {
-                self.state.ui.input_buffer.clear();
+                self.state.ui.input.clear();
                 self.state.logs.recent.clear();
                 self.state.logs.per_source.clear();
                 self.append_timeline(
@@ -541,7 +601,7 @@ impl AppStore {
     }
 
     fn sync_command_palette_cursor(&mut self) {
-        let suggestions = slash_command_suggestions(&self.state.ui.input_buffer);
+        let suggestions = slash_command_suggestions(&self.state.ui.input.buffer);
         if suggestions.is_empty() {
             self.state.ui.command_palette_cursor = 0;
             return;
@@ -553,7 +613,7 @@ impl AppStore {
     }
 
     fn move_command_palette_cursor(&mut self, forward: bool) {
-        let suggestions = slash_command_suggestions(&self.state.ui.input_buffer);
+        let suggestions = slash_command_suggestions(&self.state.ui.input.buffer);
         if suggestions.is_empty() {
             self.state.ui.command_palette_cursor = 0;
             return;
@@ -575,7 +635,7 @@ impl AppStore {
     }
 
     fn accept_command_suggestion(&mut self) {
-        let suggestions = slash_command_suggestions(&self.state.ui.input_buffer);
+        let suggestions = slash_command_suggestions(&self.state.ui.input.buffer);
         if suggestions.is_empty() {
             return;
         }
@@ -586,11 +646,75 @@ impl AppStore {
             .command_palette_cursor
             .min(suggestions.len().saturating_sub(1));
         let suggestion = suggestions[index];
-        self.state.ui.input_buffer = suggestion.completion.to_string();
+        self.state
+            .ui
+            .input
+            .set_buffer(suggestion.completion.to_string());
         if !suggestion.accepts_arguments() {
             self.state.ui.command_palette_cursor = index;
         } else {
             self.state.ui.command_palette_cursor = 0;
+        }
+    }
+
+    fn recall_history(&mut self, previous: bool) {
+        let entries = self.history_entries_for_mode();
+        if entries.is_empty() {
+            return;
+        }
+
+        let editor = &mut self.state.ui.input;
+        if previous {
+            let next_index = match editor.history_cursor {
+                Some(index) if index > 0 => index - 1,
+                Some(index) => index,
+                None => {
+                    editor.history_draft = Some(editor.buffer.clone());
+                    entries.len().saturating_sub(1)
+                }
+            };
+            editor.history_cursor = Some(next_index);
+            editor.set_buffer(entries[next_index].clone());
+            editor.history_cursor = Some(next_index);
+            return;
+        }
+
+        let Some(current_index) = editor.history_cursor else {
+            return;
+        };
+
+        if current_index + 1 < entries.len() {
+            let next_index = current_index + 1;
+            editor.history_cursor = Some(next_index);
+            editor.set_buffer(entries[next_index].clone());
+            editor.history_cursor = Some(next_index);
+            return;
+        }
+
+        let draft = editor.history_draft.take().unwrap_or_default();
+        editor.set_buffer(draft);
+        editor.history_cursor = None;
+    }
+
+    fn history_entries_for_mode(&self) -> Vec<String> {
+        match self.state.ui.input.mode {
+            InputMode::Shell => self.state.commands.history.clone(),
+            InputMode::AiAssist => self
+                .state
+                .ai
+                .requests
+                .iter()
+                .filter(|request| matches!(request.kind, AiRequestKind::Assist))
+                .map(|request| request.prompt.clone())
+                .collect(),
+            InputMode::AiDiagnose => self
+                .state
+                .ai
+                .requests
+                .iter()
+                .filter(|request| matches!(request.kind, AiRequestKind::Diagnose))
+                .map(|request| request.prompt.clone())
+                .collect(),
         }
     }
 

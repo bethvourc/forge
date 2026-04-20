@@ -1,6 +1,6 @@
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Padding, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::domain::{AppState, TimelineKind};
@@ -14,10 +14,11 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState, focused: bool
         Paragraph::new(lines)
             .block(
                 Block::default()
-                    .title(Span::styled(" Event Tape ", theme::panel_title(focused)))
+                    .title(Span::styled(" Activity ", theme::panel_title(focused)))
                     .borders(Borders::ALL)
                     .border_style(theme::pane_border(focused))
-                    .style(theme::panel_surface(focused)),
+                    .style(theme::panel_surface(focused))
+                    .padding(Padding::horizontal(1)),
             )
             .wrap(Wrap { trim: false }),
         area,
@@ -48,10 +49,16 @@ fn build_timeline_lines(state: &AppState, limit: usize) -> Vec<Line<'static>> {
     }
 
     if collapsed.is_empty() {
-        return vec![Line::from(vec![Span::styled(
-            "No events yet. Run a command to populate the timeline.",
-            theme::muted(),
-        )])];
+        return vec![
+            Line::from(vec![Span::styled(
+                "No activity yet.",
+                theme::primary(),
+            )]),
+            Line::from(vec![Span::styled(
+                "Commands, approvals, AI work, and log bursts will leave a compact audit trail here.",
+                theme::muted(),
+            )]),
+        ];
     }
 
     collapsed
@@ -72,7 +79,7 @@ fn build_timeline_lines(state: &AppState, limit: usize) -> Vec<Line<'static>> {
                     theme::status_badge(theme::timeline_color(entry.kind)),
                 ),
                 Span::raw(" "),
-                Span::styled(entry.message, theme::primary()),
+                Span::styled(truncate_end(&entry.message, 92), theme::primary()),
             ];
             if entry.count > 1 {
                 spans.push(Span::raw(" "));
@@ -81,6 +88,18 @@ fn build_timeline_lines(state: &AppState, limit: usize) -> Vec<Line<'static>> {
             Line::from(spans)
         })
         .collect()
+}
+
+fn truncate_end(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+
+    let kept = value
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect::<String>();
+    format!("{kept}…")
 }
 
 struct CollapsedEntry {

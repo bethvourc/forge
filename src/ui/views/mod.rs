@@ -12,15 +12,12 @@ use crate::domain::{AppState, FocusTarget};
 use crate::ui::theme;
 
 pub fn render(frame: &mut Frame<'_>, state: &AppState) {
-    frame.render_widget(
-        Block::default().style(theme::panel_surface(false)),
-        frame.area(),
-    );
+    frame.render_widget(Block::default().style(theme::app_surface()), frame.area());
 
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
+            Constraint::Length(2),
             Constraint::Min(12),
             Constraint::Length(state.config.ui.event_stream_height),
         ])
@@ -34,6 +31,7 @@ pub fn render(frame: &mut Frame<'_>, state: &AppState) {
             Constraint::Percentage(state.config.ui.main_split_pct),
             Constraint::Percentage(100 - state.config.ui.main_split_pct),
         ])
+        .spacing(1)
         .split(layout[1]);
 
     command_pane::render(

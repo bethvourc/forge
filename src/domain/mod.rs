@@ -18,8 +18,8 @@ pub use ai::{
     AiServiceContext, AiSessionState, AiStatus, AiTestContext, AiTimelineContext, AiUiContext,
 };
 pub use app::{
-    AppMetaState, AppState, DashboardTab, FocusTarget, ModalState, Notification, NotificationLevel,
-    NotificationState, UiState,
+    AppMetaState, AppState, DashboardTab, FocusTarget, InputEditorState, InputMode, ModalState,
+    Notification, NotificationLevel, NotificationState, UiState,
 };
 pub use approval::{ApprovalDecision, ApprovalMode, ApprovalRequest, ApprovalState, SafetyClass};
 pub use command::{

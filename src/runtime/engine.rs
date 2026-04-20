@@ -151,7 +151,7 @@ fn map_key_event(key: KeyEvent, state: &crate::domain::AppState) -> Option<AppAc
 
     let command_palette_active = matches!(state.ui.focus, FocusTarget::CommandPane)
         && state.ui.modal.is_none()
-        && slash_palette_active(&state.ui.input_buffer);
+        && slash_palette_active(&state.ui.input.buffer);
 
     if matches!(key.code, KeyCode::F(1)) {
         return Some(AppAction::ParsedInput(ParsedInput::Help));
@@ -164,6 +164,15 @@ fn map_key_event(key: KeyEvent, state: &crate::domain::AppState) -> Option<AppAc
         KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             Some(AppAction::Ui(UiIntent::ClearInput))
         }
+        KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(AppAction::Ui(UiIntent::InsertNewline))
+        }
+        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(AppAction::Ui(UiIntent::RecallPreviousHistory))
+        }
+        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(AppAction::Ui(UiIntent::RecallNextHistory))
+        }
         KeyCode::Tab if command_palette_active => {
             Some(AppAction::Ui(UiIntent::AcceptCommandSuggestion))
         }
@@ -172,8 +181,50 @@ fn map_key_event(key: KeyEvent, state: &crate::domain::AppState) -> Option<AppAc
         KeyCode::Up if command_palette_active => {
             Some(AppAction::Ui(UiIntent::PrevCommandSuggestion))
         }
+        KeyCode::Up
+            if key.modifiers.is_empty()
+                && matches!(state.ui.focus, FocusTarget::CommandPane)
+                && state.ui.modal.is_none() =>
+        {
+            Some(AppAction::Ui(UiIntent::MoveCursorUp))
+        }
         KeyCode::Down if command_palette_active => {
             Some(AppAction::Ui(UiIntent::NextCommandSuggestion))
+        }
+        KeyCode::Down
+            if key.modifiers.is_empty()
+                && matches!(state.ui.focus, FocusTarget::CommandPane)
+                && state.ui.modal.is_none() =>
+        {
+            Some(AppAction::Ui(UiIntent::MoveCursorDown))
+        }
+        KeyCode::Left
+            if key.modifiers.is_empty()
+                && matches!(state.ui.focus, FocusTarget::CommandPane)
+                && state.ui.modal.is_none() =>
+        {
+            Some(AppAction::Ui(UiIntent::MoveCursorLeft))
+        }
+        KeyCode::Right
+            if key.modifiers.is_empty()
+                && matches!(state.ui.focus, FocusTarget::CommandPane)
+                && state.ui.modal.is_none() =>
+        {
+            Some(AppAction::Ui(UiIntent::MoveCursorRight))
+        }
+        KeyCode::Home
+            if key.modifiers.is_empty()
+                && matches!(state.ui.focus, FocusTarget::CommandPane)
+                && state.ui.modal.is_none() =>
+        {
+            Some(AppAction::Ui(UiIntent::MoveCursorHome))
+        }
+        KeyCode::End
+            if key.modifiers.is_empty()
+                && matches!(state.ui.focus, FocusTarget::CommandPane)
+                && state.ui.modal.is_none() =>
+        {
+            Some(AppAction::Ui(UiIntent::MoveCursorEnd))
         }
         KeyCode::Left
             if key.modifiers.is_empty()
@@ -194,6 +245,18 @@ fn map_key_event(key: KeyEvent, state: &crate::domain::AppState) -> Option<AppAc
         }
         KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
             Some(AppAction::Ui(UiIntent::NextTab))
+        }
+        KeyCode::F(2)
+            if matches!(state.ui.focus, FocusTarget::CommandPane) && state.ui.modal.is_none() =>
+        {
+            Some(AppAction::Ui(UiIntent::CycleInputMode))
+        }
+        KeyCode::Enter
+            if key.modifiers.contains(KeyModifiers::SHIFT)
+                && matches!(state.ui.focus, FocusTarget::CommandPane)
+                && state.ui.modal.is_none() =>
+        {
+            Some(AppAction::Ui(UiIntent::InsertNewline))
         }
         KeyCode::Enter => Some(AppAction::Ui(UiIntent::Submit)),
         KeyCode::Backspace => Some(AppAction::Ui(UiIntent::Backspace)),
