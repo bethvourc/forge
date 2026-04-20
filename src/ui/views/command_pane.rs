@@ -321,6 +321,45 @@ fn render_ai_panel(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
                         ]));
                     }
                 }
+                if !response.proposals.is_empty() {
+                    lines.push(Line::raw(""));
+                    lines.push(Line::from(vec![Span::styled(
+                        "Proposals",
+                        theme::section_title(),
+                    )]));
+                    for (index, proposal) in response.proposals.iter().take(3).enumerate() {
+                        lines.push(Line::from(vec![
+                            Span::styled(format!("{}. ", index + 1), theme::accent()),
+                            Span::styled(
+                                format!("[{}] ", proposal.safety_class.label()),
+                                theme::status_badge(theme::INFO),
+                            ),
+                            Span::styled(
+                                truncate_multiline(
+                                    &proposal.summary,
+                                    area.width.saturating_sub(20) as usize,
+                                ),
+                                theme::primary(),
+                            ),
+                        ]));
+
+                        let detail = proposal.command.as_deref().unwrap_or(&proposal.detail);
+                        let action_hint = if proposal.command.is_some() {
+                            format!("/apply {}", index + 1)
+                        } else {
+                            "inspect only".to_string()
+                        };
+                        lines.push(Line::from(vec![
+                            Span::styled("   ", theme::muted()),
+                            Span::styled(
+                                truncate_multiline(detail, area.width.saturating_sub(20) as usize),
+                                theme::muted(),
+                            ),
+                            Span::raw("  "),
+                            Span::styled(action_hint, theme::accent()),
+                        ]));
+                    }
+                }
                 if !response.citations.is_empty() {
                     lines.push(Line::raw(""));
                     lines.push(Line::from(vec![Span::styled(
@@ -355,7 +394,7 @@ fn render_ai_panel(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             } else {
                 lines.push(Line::raw(""));
                 lines.push(Line::from(vec![Span::styled(
-                    "Use /ai <prompt> for assistance or /diagnose <prompt> for grounded diagnosis.",
+                    "Use /ai <prompt> for assistance, /diagnose <prompt> for diagnosis, and /apply <n> to run a proposal through approvals.",
                     theme::muted(),
                 )]));
             }

@@ -1,5 +1,7 @@
 use crate::ai::provider::{AiFuture, AiProvider};
-use crate::domain::{AiCitation, AiRequest, AiRequestKind, AiResponse};
+use crate::domain::{
+    AiActionProposal, AiCitation, AiRequest, AiRequestKind, AiResponse, SafetyClass,
+};
 use crate::shared::time::now_utc;
 
 pub struct MockProvider {
@@ -59,6 +61,41 @@ fn mock_response(request: AiRequest, model: Option<String>) -> AiResponse {
         ));
     }
 
+    let proposals = match request.kind {
+        AiRequestKind::Assist => vec![
+            AiActionProposal {
+                summary: "Inspect the current repository state".to_string(),
+                detail: "Check the working tree before taking additional action.".to_string(),
+                command: Some("git status".to_string()),
+                safety_class: SafetyClass::Passive,
+            },
+            AiActionProposal {
+                summary: "Run the Rust test suite".to_string(),
+                detail: "Confirm the current behavior against the latest local changes."
+                    .to_string(),
+                command: Some("cargo test".to_string()),
+                safety_class: SafetyClass::Caution,
+            },
+        ],
+        AiRequestKind::Diagnose => vec![
+            AiActionProposal {
+                summary: "Re-run tests to reproduce the failure".to_string(),
+                detail: "Use a fresh test run so the latest output is captured in Forge."
+                    .to_string(),
+                command: Some("cargo test".to_string()),
+                safety_class: SafetyClass::Caution,
+            },
+            AiActionProposal {
+                summary: "Review the current diff".to_string(),
+                detail:
+                    "Inspect the working tree for recent changes that correlate with the failure."
+                        .to_string(),
+                command: Some("git diff --stat".to_string()),
+                safety_class: SafetyClass::Passive,
+            },
+        ],
+    };
+
     AiResponse {
         request_id: request.id,
         created_at: now_utc(),
@@ -67,7 +104,7 @@ fn mock_response(request: AiRequest, model: Option<String>) -> AiResponse {
         summary: format!("Mock AI response for `{}`", request.prompt),
         message,
         recommendations,
-        proposals: Vec::new(),
+        proposals,
         citations: vec![AiCitation {
             label: "context".to_string(),
             detail: format!(

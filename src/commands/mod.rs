@@ -20,6 +20,7 @@ pub enum ParsedInput {
         prompt: String,
         kind: AiRequestKind,
     },
+    ApplyAiProposal(usize),
 }
 
 pub fn parse_input(input: &str) -> Result<ParsedInput, String> {
@@ -29,12 +30,7 @@ pub fn parse_input(input: &str) -> Result<ParsedInput, String> {
     }
 
     if !trimmed.starts_with('/') {
-        let (command, background) = parse_shell(trimmed);
-        return Ok(ParsedInput::Execute {
-            command,
-            background,
-            provenance: CommandProvenance::UserInput,
-        });
+        return parse_shell_input(trimmed, CommandProvenance::UserInput);
     }
 
     if trimmed == "/quit" || trimmed == "/exit" {
@@ -84,8 +80,45 @@ pub fn parse_input(input: &str) -> Result<ParsedInput, String> {
             kind: AiRequestKind::Diagnose,
         });
     }
+    if let Some(rest) = trimmed.strip_prefix("/apply ") {
+        let index = rest
+            .trim()
+            .parse::<usize>()
+            .map_err(|_| "apply expects a numeric proposal index".to_string())?;
+        if index == 0 {
+            return Err("apply expects a proposal index starting at 1".to_string());
+        }
+        return Ok(ParsedInput::ApplyAiProposal(index));
+    }
+    if let Some(rest) = trimmed.strip_prefix("/run-proposal ") {
+        let index = rest
+            .trim()
+            .parse::<usize>()
+            .map_err(|_| "run-proposal expects a numeric proposal index".to_string())?;
+        if index == 0 {
+            return Err("run-proposal expects a proposal index starting at 1".to_string());
+        }
+        return Ok(ParsedInput::ApplyAiProposal(index));
+    }
 
     Err(format!("unknown slash command: {trimmed}"))
+}
+
+pub fn parse_shell_input(
+    input: &str,
+    provenance: CommandProvenance,
+) -> Result<ParsedInput, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("input is empty".to_string());
+    }
+
+    let (command, background) = parse_shell(trimmed);
+    Ok(ParsedInput::Execute {
+        command,
+        background,
+        provenance,
+    })
 }
 
 fn parse_shell(input: &str) -> (String, bool) {

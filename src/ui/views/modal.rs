@@ -69,6 +69,7 @@ pub fn render(frame: &mut Frame<'_>, state: &AppState) {
                 Line::from("/help              open this help"),
                 Line::from("/ai <prompt>       queue an AI assistance request"),
                 Line::from("/diagnose <prompt> queue an AI diagnosis request"),
+                Line::from("/apply <n>         run AI proposal n through safety checks"),
                 Line::from("/bg <cmd>          run a background command"),
                 Line::from("/cancel <id>       cancel a running command"),
                 Line::from("/approve           approve the current pending action"),

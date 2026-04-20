@@ -2,13 +2,13 @@ use std::collections::BTreeMap;
 
 use crate::ai;
 use crate::app::{AppAction, AppEvent, Effect, UiIntent};
-use crate::commands::{parse_input, ParsedInput};
+use crate::commands::{parse_input, parse_shell_input, ParsedInput};
 use crate::domain::{
-    AiMessage, AiMessageRole, AiRequest, AiRequestKind, AiStatus, AppState, ApprovalDecision,
-    ApprovalMode, ApprovalRequest, CommandRecord, CommandStatus, DashboardTab, DiagnosticLevel,
-    DiagnosticRecord, ExecutionMode, ExecutionRequest, FocusTarget, JobRecord, JobStatus,
-    ModalState, Notification, NotificationLevel, ProcessSnapshot, ProcessStatus, ServiceHealth,
-    ServiceRecord, ServiceSource, TimelineEntry, TimelineKind,
+    AiActionProposal, AiMessage, AiMessageRole, AiRequest, AiRequestKind, AiStatus, AppState,
+    ApprovalDecision, ApprovalMode, ApprovalRequest, CommandRecord, CommandStatus, DashboardTab,
+    DiagnosticLevel, DiagnosticRecord, ExecutionMode, ExecutionRequest, FocusTarget, JobRecord,
+    JobStatus, ModalState, Notification, NotificationLevel, ProcessSnapshot, ProcessStatus,
+    ServiceHealth, ServiceRecord, ServiceSource, TimelineEntry, TimelineKind,
 };
 use crate::safety::{approval_message, approval_mode_for, classify_command};
 use crate::shared::ids::{ApprovalId, CommandId, IdGenerator};
@@ -77,6 +77,7 @@ impl AppStore {
             AppEvent::AiCompleted(response) => {
                 let request_id = response.request_id;
                 let summary = truncate_for_timeline(&response.summary, 96);
+                let proposal_count = response.proposals.len();
                 let history_limit = self.state.config.ai.history_limit;
                 self.state.ai.status = AiStatus::Completed;
                 self.state.ai.active_request = None;
@@ -92,11 +93,24 @@ impl AppStore {
                 );
                 self.append_timeline(
                     TimelineKind::Ai,
-                    format!("AI response ready for request #{request_id}: {summary}"),
+                    format!(
+                        "AI response ready for request #{request_id}: {summary}{}",
+                        if proposal_count > 0 {
+                            format!(" ({proposal_count} proposal(s))")
+                        } else {
+                            String::new()
+                        }
+                    ),
                 );
                 self.push_notification(
                     NotificationLevel::Info,
-                    format!("AI response ready for request #{request_id}"),
+                    if proposal_count > 0 {
+                        format!(
+                            "AI response ready for request #{request_id} with {proposal_count} proposal(s)"
+                        )
+                    } else {
+                        format!("AI response ready for request #{request_id}")
+                    },
                 );
             }
             AppEvent::AiFailed {
@@ -508,6 +522,7 @@ impl AppStore {
                 Vec::new()
             }
             ParsedInput::AiPrompt { prompt, kind } => self.prepare_ai_request(prompt, kind),
+            ParsedInput::ApplyAiProposal(index) => self.apply_ai_proposal(index),
         }
     }
 
@@ -566,6 +581,16 @@ impl AppStore {
         background: bool,
         provenance: crate::domain::CommandProvenance,
     ) -> Vec<Effect> {
+        self.prepare_execution_internal(raw, background, provenance, None)
+    }
+
+    fn prepare_execution_internal(
+        &mut self,
+        raw: String,
+        background: bool,
+        provenance: crate::domain::CommandProvenance,
+        proposal_context: Option<(usize, &AiActionProposal)>,
+    ) -> Vec<Effect> {
         let safety_class = classify_command(&raw);
         let command_id = self.ids.next_command();
         let job_id = self.ids.next_job();
@@ -620,15 +645,7 @@ impl AppStore {
                 class: safety_class,
                 mode,
                 summary: raw.clone(),
-                detail: format!(
-                    "{} action classified as {}",
-                    if background {
-                        "background"
-                    } else {
-                        "foreground"
-                    },
-                    safety_class.label()
-                ),
+                detail: approval_detail(background, safety_class, proposal_context),
                 execution: request,
             };
             self.append_timeline(TimelineKind::Approval, approval_message(&approval));
@@ -648,6 +665,95 @@ impl AppStore {
             ),
         );
         vec![Effect::ExecuteCommand(request)]
+    }
+
+    fn apply_ai_proposal(&mut self, proposal_index: usize) -> Vec<Effect> {
+        let Some(response) = self.state.ai.last_response.clone() else {
+            self.push_notification(
+                NotificationLevel::Warn,
+                "no AI proposals are available yet".to_string(),
+            );
+            self.append_timeline(
+                TimelineKind::Ai,
+                "attempted to apply an AI proposal before any response was available".to_string(),
+            );
+            return Vec::new();
+        };
+
+        let Some(proposal) = response
+            .proposals
+            .get(proposal_index.saturating_sub(1))
+            .cloned()
+        else {
+            self.push_notification(
+                NotificationLevel::Warn,
+                format!("AI proposal #{proposal_index} does not exist"),
+            );
+            self.append_timeline(
+                TimelineKind::Ai,
+                format!(
+                    "attempted to apply missing AI proposal #{proposal_index} from request #{}",
+                    response.request_id
+                ),
+            );
+            return Vec::new();
+        };
+
+        let Some(command) = proposal
+            .command
+            .as_deref()
+            .map(str::trim)
+            .filter(|command| !command.is_empty())
+        else {
+            self.push_notification(
+                NotificationLevel::Warn,
+                format!("AI proposal #{proposal_index} has no executable command"),
+            );
+            self.append_timeline(
+                TimelineKind::Ai,
+                format!(
+                    "AI proposal #{proposal_index} is advisory only: {}",
+                    truncate_for_timeline(&proposal.summary, 96)
+                ),
+            );
+            return Vec::new();
+        };
+
+        let parsed =
+            match parse_shell_input(command, crate::domain::CommandProvenance::AiSuggestion) {
+                Ok(parsed) => parsed,
+                Err(message) => {
+                    self.push_notification(NotificationLevel::Warn, message.clone());
+                    self.append_timeline(TimelineKind::Error, message);
+                    return Vec::new();
+                }
+            };
+
+        self.append_timeline(
+            TimelineKind::Ai,
+            format!(
+                "selected AI proposal #{proposal_index}: {}",
+                truncate_for_timeline(&proposal.summary, 96)
+            ),
+        );
+        self.push_notification(
+            NotificationLevel::Info,
+            format!("selected AI proposal #{proposal_index}"),
+        );
+
+        match parsed {
+            ParsedInput::Execute {
+                command,
+                background,
+                provenance,
+            } => self.prepare_execution_internal(
+                command,
+                background,
+                provenance,
+                Some((proposal_index, &proposal)),
+            ),
+            _ => Vec::new(),
+        }
     }
 
     fn resolve_approval(&mut self, approval_id: ApprovalId, approved: bool) -> Vec<Effect> {
@@ -849,4 +955,30 @@ fn truncate_for_timeline(message: &str, max_len: usize) -> String {
         return trimmed.to_string();
     }
     format!("{}...", &trimmed[..max_len.saturating_sub(3)])
+}
+
+fn approval_detail(
+    background: bool,
+    safety_class: crate::domain::SafetyClass,
+    proposal_context: Option<(usize, &AiActionProposal)>,
+) -> String {
+    if let Some((proposal_index, proposal)) = proposal_context {
+        return format!(
+            "AI proposal #{proposal_index}: {}. {} Runtime classification: {} (model hint: {}).",
+            proposal.summary,
+            proposal.detail,
+            safety_class.label(),
+            proposal.safety_class.label()
+        );
+    }
+
+    format!(
+        "{} action classified as {}",
+        if background {
+            "background"
+        } else {
+            "foreground"
+        },
+        safety_class.label()
+    )
 }

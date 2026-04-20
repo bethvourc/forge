@@ -5,12 +5,13 @@ use forge::app::{AppAction, AppStore, Effect};
 use forge::commands::{parse_input, ParsedInput};
 use forge::config::ForgeConfig;
 use forge::domain::{
-    AiRequestKind, AppState, ApprovalMode, CommandProvenance, CommandStatus, DashboardTab,
-    FocusTarget, GitSnapshot, LogEntry, LogSeverity, LogSource, LogStream, ModalState,
-    ProjectContext, SafetyClass,
+    AiActionProposal, AiRequestKind, AiResponse, AppState, ApprovalMode, CommandProvenance,
+    CommandStatus, DashboardTab, FocusTarget, GitSnapshot, LogEntry, LogSeverity, LogSource,
+    LogStream, ModalState, ProjectContext, SafetyClass,
 };
 use forge::safety::classify_command;
-use forge::shared::ids::{CommandId, LogId};
+use forge::shared::ids::{AiRequestId, CommandId, LogId};
+use forge::shared::time::now_utc;
 
 #[test]
 fn parses_background_shell_execution() {
@@ -87,6 +88,13 @@ fn parses_supported_slash_commands() {
         }
         other => panic!("unexpected parse result: {:?}", other),
     }
+
+    match parse_input("/apply 2").unwrap() {
+        ParsedInput::ApplyAiProposal(index) => assert_eq!(index, 2),
+        other => panic!("unexpected parse result: {:?}", other),
+    }
+
+    assert!(parse_input("/apply 0").is_err());
 }
 
 #[test]
@@ -212,6 +220,54 @@ fn store_ai_prompt_reports_unavailable_provider() {
         store.state().ai.requests[0].kind,
         AiRequestKind::Diagnose
     ));
+}
+
+#[test]
+fn store_apply_ai_proposal_uses_runtime_safety_pipeline() {
+    let mut store = test_store();
+    store.state_mut().ai.last_response = Some(AiResponse {
+        request_id: AiRequestId(7),
+        created_at: now_utc(),
+        provider: "mock".to_string(),
+        model: Some("test-model".to_string()),
+        summary: "Suggested a follow-up action".to_string(),
+        message: "The AI found a command worth reviewing.".to_string(),
+        recommendations: Vec::new(),
+        proposals: vec![AiActionProposal {
+            summary: "Write a temp file".to_string(),
+            detail: "Capture output in a temp file for later inspection.".to_string(),
+            command: Some("echo hi > /tmp/forge-test.txt".to_string()),
+            safety_class: SafetyClass::Passive,
+        }],
+        citations: Vec::new(),
+    });
+
+    let effects = store.dispatch_action(AppAction::ParsedInput(ParsedInput::ApplyAiProposal(1)));
+
+    assert!(matches!(effects.as_slice(), [Effect::QueueApproval(_)]));
+    let command = store
+        .state()
+        .commands
+        .records
+        .last()
+        .expect("proposal command record should exist");
+    assert_eq!(command.raw, "echo hi > /tmp/forge-test.txt");
+    assert!(matches!(
+        command.provenance,
+        CommandProvenance::AiSuggestion
+    ));
+    assert!(matches!(command.safety_class, SafetyClass::Risky));
+    assert!(matches!(command.status, CommandStatus::PendingApproval));
+
+    let approval = store
+        .state()
+        .approvals
+        .pending
+        .last()
+        .expect("proposal approval should be queued");
+    assert!(matches!(approval.mode, ApprovalMode::ModalConfirm));
+    assert!(approval.detail.contains("AI proposal #1"));
+    assert!(approval.detail.contains("model hint: Passive"));
 }
 
 #[test]
