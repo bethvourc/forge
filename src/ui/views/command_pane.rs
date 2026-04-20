@@ -4,22 +4,26 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
+use crate::commands::{slash_command_suggestions, SlashCommandSpec};
 use crate::domain::{AiMessageRole, AiStatus, AppState, ApprovalMode};
 use crate::shared::time::format_timestamp;
 use crate::ui::theme;
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState, focused: bool) {
     let block = Block::default()
-        .title(Span::styled(" Command / AI ", theme::panel_title(focused)))
+        .title(Span::styled(" Command Deck ", theme::panel_title(focused)))
         .borders(Borders::ALL)
         .border_style(theme::pane_border(focused))
-        .style(theme::primary().bg(theme::BG_BASE));
+        .style(theme::panel_surface(focused));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    let slash_suggestions = slash_command_suggestions(&state.ui.input_buffer);
+    let input_height = if slash_suggestions.is_empty() { 6 } else { 11 };
+
     let sections = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(5)])
+        .constraints([Constraint::Min(0), Constraint::Length(input_height)])
         .split(inner);
 
     let top = Layout::default()
@@ -35,16 +39,31 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState, focused: bool
         .split(top[1]);
     render_ai_panel(frame, body[0], state);
     render_history(frame, body[1], state);
-    render_input(frame, sections[1], state, focused);
+    render_input(frame, sections[1], state, focused, &slash_suggestions);
 }
 
-fn render_input(frame: &mut Frame<'_>, area: Rect, state: &AppState, focused: bool) {
-    let content_width = area.width.saturating_sub(6) as usize;
+fn render_input(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    state: &AppState,
+    focused: bool,
+    slash_suggestions: &[&SlashCommandSpec],
+) {
+    let content_width = area.width.saturating_sub(10) as usize;
     let visible_input = visible_input_text(&state.ui.input_buffer, content_width.max(8));
+    let slash_mode = state.ui.input_buffer.trim_start().starts_with('/');
+    let mode_label = if slash_mode { "SLASH" } else { "SHELL" };
+    let mode_color = if slash_mode {
+        theme::INFO
+    } else {
+        theme::ACCENT
+    };
 
-    let lines = vec![
+    let mut lines = vec![
         Line::from(vec![
-            Span::styled(" $ ", theme::status_badge(theme::ACCENT)),
+            Span::styled(format!(" {mode_label} "), theme::status_badge(mode_color)),
+            Span::raw(" "),
+            Span::styled(if slash_mode { "forge>" } else { "$" }, theme::accent()),
             Span::raw(" "),
             Span::styled(visible_input, theme::primary()),
             Span::styled(
@@ -58,36 +77,104 @@ fn render_input(frame: &mut Frame<'_>, area: Rect, state: &AppState, focused: bo
         ]),
         Line::from(vec![Span::styled(
             if state.ui.input_buffer.is_empty() {
-                "Start typing a shell command or use /help for slash commands."
+                "Type / to open the Forge command palette, or run a shell command directly."
+            } else if !slash_suggestions.is_empty() {
+                "Up/Down selects a command. Tab inserts it. Enter runs the current input."
+            } else if slash_mode {
+                "No slash command matches the current input."
             } else {
-                "Enter runs the command. Tab changes focus. Alt+Left/Right switches dashboard tabs."
+                "Enter runs the command. / opens the Forge command palette."
             },
             theme::muted(),
         )]),
-        Line::from(vec![
-            Span::styled("shell ", theme::subtle()),
-            Span::styled(
-                state.config.commands.default_shell.clone(),
-                theme::primary(),
-            ),
-            Span::raw("  "),
-            Span::styled("focus ", theme::subtle()),
-            Span::styled(
-                if focused { "command" } else { "other" },
-                if focused {
-                    theme::accent()
-                } else {
-                    theme::muted()
-                },
-            ),
-        ]),
     ];
+
+    if !slash_suggestions.is_empty() {
+        let selection = state
+            .ui
+            .command_palette_cursor
+            .min(slash_suggestions.len() - 1);
+        let visible_len = slash_suggestions.len().min(4);
+        let max_start = slash_suggestions.len().saturating_sub(visible_len);
+        let visible_start = selection
+            .saturating_sub(visible_len.saturating_sub(1))
+            .min(max_start);
+
+        lines.push(Line::raw(""));
+        lines.push(Line::from(vec![Span::styled(
+            "Command Palette",
+            theme::section_title(),
+        )]));
+        for (offset, suggestion) in slash_suggestions
+            .iter()
+            .skip(visible_start)
+            .take(visible_len)
+            .enumerate()
+        {
+            let index = visible_start + offset;
+            let selected = index == selection;
+            lines.push(Line::from(vec![
+                Span::styled(
+                    if selected { "▶ " } else { "  " },
+                    if selected {
+                        theme::accent()
+                    } else {
+                        theme::subtle()
+                    },
+                ),
+                Span::styled(
+                    format!("{:<18}", suggestion.usage),
+                    theme::command_palette_item(selected),
+                ),
+                Span::raw(" "),
+                Span::styled(
+                    truncate_multiline(suggestion.summary, area.width.saturating_sub(28) as usize),
+                    theme::command_palette_summary(selected),
+                ),
+            ]));
+        }
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::from(vec![
+        Span::styled("shell ", theme::subtle()),
+        Span::styled(
+            state.config.commands.default_shell.clone(),
+            theme::primary(),
+        ),
+        Span::raw("  "),
+        Span::styled("focus ", theme::subtle()),
+        Span::styled(
+            if focused { "command" } else { "other" },
+            if focused {
+                theme::accent()
+            } else {
+                theme::muted()
+            },
+        ),
+        if !slash_suggestions.is_empty() {
+            Span::raw("  ")
+        } else {
+            Span::raw("")
+        },
+        if !slash_suggestions.is_empty() {
+            Span::styled("Tab", theme::keycap())
+        } else {
+            Span::raw("")
+        },
+        if !slash_suggestions.is_empty() {
+            Span::styled(" insert", theme::muted())
+        } else {
+            Span::raw("")
+        },
+    ]));
     frame.render_widget(
         Paragraph::new(lines).block(
             Block::default()
-                .title(Span::styled(" Input ", theme::section_title()))
+                .title(Span::styled(" Console ", theme::section_title()))
                 .borders(Borders::ALL)
-                .border_style(theme::pane_border(focused)),
+                .border_style(theme::pane_border(focused))
+                .style(theme::panel_surface(focused)),
         ),
         area,
     );
@@ -116,10 +203,10 @@ fn render_activity(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             ),
         ]));
         lines.push(Line::from(vec![
-            Span::styled("Enter", theme::accent()),
+            Span::styled("Enter", theme::keycap()),
             Span::styled(" approve", theme::muted()),
             Span::raw("  "),
-            Span::styled("Esc", theme::accent()),
+            Span::styled("Esc", theme::keycap()),
             Span::styled(" deny", theme::muted()),
         ]));
     } else {
@@ -129,10 +216,10 @@ fn render_activity(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             Span::styled("No inline approvals waiting", theme::muted()),
         ]));
         lines.push(Line::from(vec![
-            Span::styled("Enter", theme::accent()),
+            Span::styled("Enter", theme::keycap()),
             Span::styled(" run command", theme::muted()),
             Span::raw("  "),
-            Span::styled("Ctrl+L", theme::accent()),
+            Span::styled("Ctrl+L", theme::keycap()),
             Span::styled(" clear input", theme::muted()),
         ]));
     }
@@ -162,7 +249,11 @@ fn render_activity(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 
     frame.render_widget(
         Paragraph::new(lines)
-            .block(Block::default().title(Span::styled(" Activity ", theme::section_title())))
+            .block(
+                Block::default()
+                    .title(Span::styled(" Signal ", theme::section_title()))
+                    .style(theme::panel_surface(false)),
+            )
             .wrap(Wrap { trim: false }),
         area,
     );
@@ -219,7 +310,9 @@ fn render_history(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         ]));
     }
 
-    let block = Block::default().title(Span::styled(" Recent Commands ", theme::section_title()));
+    let block = Block::default()
+        .title(Span::styled(" Flight Tape ", theme::section_title()))
+        .style(theme::panel_surface(false));
     frame.render_widget(
         Paragraph::new(lines)
             .block(block)
@@ -403,7 +496,11 @@ fn render_ai_panel(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 
     frame.render_widget(
         Paragraph::new(lines)
-            .block(Block::default().title(Span::styled(" AI Response ", theme::section_title())))
+            .block(
+                Block::default()
+                    .title(Span::styled(" AI Relay ", theme::section_title()))
+                    .style(theme::panel_surface(false)),
+            )
             .wrap(Wrap { trim: false }),
         area,
     );

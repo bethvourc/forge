@@ -52,7 +52,8 @@ pub fn render(frame: &mut Frame<'_>, state: &AppState) {
                         Block::default()
                             .title("Approval Required")
                             .borders(Borders::ALL)
-                            .border_style(theme::pane_border(true)),
+                            .border_style(theme::pane_border(true))
+                            .style(theme::panel_surface(true)),
                     ),
                 area,
             );
@@ -76,10 +77,13 @@ pub fn render(frame: &mut Frame<'_>, state: &AppState) {
                 Line::from("/deny              deny the current pending action"),
                 Line::from("/tab next          next dashboard tab"),
                 Line::from("/tab prev          previous dashboard tab"),
+                Line::from("/clear             clear input and visible logs"),
                 Line::from("/quit              exit Forge"),
                 Line::raw(""),
                 Line::from("Keyboard"),
                 Line::from("Tab                cycle pane focus"),
+                Line::from("Tab (with /)       insert selected slash command"),
+                Line::from("Up/Down (with /)   move through slash suggestions"),
                 Line::from("Left/Right         switch dashboard tabs when dashboard is focused"),
                 Line::from("Enter              run input or confirm modal"),
                 Line::from("Esc                close modal / deny approval"),
@@ -94,7 +98,8 @@ pub fn render(frame: &mut Frame<'_>, state: &AppState) {
                         Block::default()
                             .title("Help")
                             .borders(Borders::ALL)
-                            .border_style(theme::pane_border(true)),
+                            .border_style(theme::pane_border(true))
+                            .style(theme::panel_surface(true)),
                     ),
                 area,
             );
@@ -108,7 +113,8 @@ pub fn render(frame: &mut Frame<'_>, state: &AppState) {
                         Block::default()
                             .title("Error")
                             .borders(Borders::ALL)
-                            .border_style(Style::default().fg(theme::ERROR)),
+                            .border_style(Style::default().fg(theme::ERROR))
+                            .style(theme::panel_surface(true)),
                     ),
                 area,
             );

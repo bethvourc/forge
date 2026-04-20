@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::ai;
 use crate::app::{AppAction, AppEvent, Effect, UiIntent};
-use crate::commands::{parse_input, parse_shell_input, ParsedInput};
+use crate::commands::{parse_input, parse_shell_input, slash_command_suggestions, ParsedInput};
 use crate::domain::{
     AiActionProposal, AiMessage, AiMessageRole, AiRequest, AiRequestKind, AiStatus, AppState,
     ApprovalDecision, ApprovalMode, ApprovalRequest, CommandRecord, CommandStatus, DashboardTab,
@@ -351,12 +351,14 @@ impl AppStore {
                     }
                 } else if matches!(self.state.ui.focus, FocusTarget::CommandPane) {
                     self.state.ui.input_buffer.push(c);
+                    self.sync_command_palette_cursor();
                 } else if self.state.ui.modal.is_some() {
                     return Vec::new();
                 }
             }
             UiIntent::Backspace => {
                 self.state.ui.input_buffer.pop();
+                self.sync_command_palette_cursor();
             }
             UiIntent::Submit => {
                 if let Some(modal) = self.state.ui.modal.as_ref() {
@@ -379,6 +381,7 @@ impl AppStore {
                 }
 
                 let raw = std::mem::take(&mut self.state.ui.input_buffer);
+                self.state.ui.command_palette_cursor = 0;
                 match parse_input(&raw) {
                     Ok(parsed) => return self.dispatch_action(AppAction::ParsedInput(parsed)),
                     Err(message) => {
@@ -389,6 +392,16 @@ impl AppStore {
             }
             UiIntent::ClearInput => {
                 self.state.ui.input_buffer.clear();
+                self.state.ui.command_palette_cursor = 0;
+            }
+            UiIntent::PrevCommandSuggestion => {
+                self.move_command_palette_cursor(false);
+            }
+            UiIntent::NextCommandSuggestion => {
+                self.move_command_palette_cursor(true);
+            }
+            UiIntent::AcceptCommandSuggestion => {
+                self.accept_command_suggestion();
             }
             UiIntent::NextFocus => {
                 if self.state.ui.modal.is_some() {
@@ -461,6 +474,7 @@ impl AppStore {
                     };
                 }
                 self.state.ui.input_buffer.clear();
+                self.state.ui.command_palette_cursor = 0;
             }
         }
         Vec::new()
@@ -523,6 +537,60 @@ impl AppStore {
             }
             ParsedInput::AiPrompt { prompt, kind } => self.prepare_ai_request(prompt, kind),
             ParsedInput::ApplyAiProposal(index) => self.apply_ai_proposal(index),
+        }
+    }
+
+    fn sync_command_palette_cursor(&mut self) {
+        let suggestions = slash_command_suggestions(&self.state.ui.input_buffer);
+        if suggestions.is_empty() {
+            self.state.ui.command_palette_cursor = 0;
+            return;
+        }
+
+        if self.state.ui.command_palette_cursor >= suggestions.len() {
+            self.state.ui.command_palette_cursor = suggestions.len().saturating_sub(1);
+        }
+    }
+
+    fn move_command_palette_cursor(&mut self, forward: bool) {
+        let suggestions = slash_command_suggestions(&self.state.ui.input_buffer);
+        if suggestions.is_empty() {
+            self.state.ui.command_palette_cursor = 0;
+            return;
+        }
+
+        let len = suggestions.len();
+        let current = self
+            .state
+            .ui
+            .command_palette_cursor
+            .min(len.saturating_sub(1));
+        self.state.ui.command_palette_cursor = if forward {
+            (current + 1) % len
+        } else if current == 0 {
+            len - 1
+        } else {
+            current - 1
+        };
+    }
+
+    fn accept_command_suggestion(&mut self) {
+        let suggestions = slash_command_suggestions(&self.state.ui.input_buffer);
+        if suggestions.is_empty() {
+            return;
+        }
+
+        let index = self
+            .state
+            .ui
+            .command_palette_cursor
+            .min(suggestions.len().saturating_sub(1));
+        let suggestion = suggestions[index];
+        self.state.ui.input_buffer = suggestion.completion.to_string();
+        if !suggestion.accepts_arguments() {
+            self.state.ui.command_palette_cursor = index;
+        } else {
+            self.state.ui.command_palette_cursor = 0;
         }
     }
 

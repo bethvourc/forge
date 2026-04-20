@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::time::SystemTime;
 
 use forge::app::{AppAction, AppStore, Effect};
-use forge::commands::{parse_input, ParsedInput};
+use forge::commands::{parse_input, slash_command_suggestions, ParsedInput};
 use forge::config::ForgeConfig;
 use forge::domain::{
     AiActionProposal, AiRequestKind, AiResponse, AppState, ApprovalMode, CommandProvenance,
@@ -95,6 +95,10 @@ fn parses_supported_slash_commands() {
     }
 
     assert!(parse_input("/apply 0").is_err());
+
+    let suggestions = slash_command_suggestions("/");
+    assert!(!suggestions.is_empty());
+    assert!(suggestions.iter().any(|command| command.usage == "/help"));
 }
 
 #[test]
@@ -268,6 +272,18 @@ fn store_apply_ai_proposal_uses_runtime_safety_pipeline() {
     assert!(matches!(approval.mode, ApprovalMode::ModalConfirm));
     assert!(approval.detail.contains("AI proposal #1"));
     assert!(approval.detail.contains("model hint: Passive"));
+}
+
+#[test]
+fn store_accepts_slash_command_suggestion_into_input() {
+    let mut store = test_store();
+
+    store.dispatch_action(AppAction::Ui(forge::app::UiIntent::KeyChar('/')));
+    store.dispatch_action(AppAction::Ui(forge::app::UiIntent::KeyChar('d')));
+    store.dispatch_action(AppAction::Ui(forge::app::UiIntent::AcceptCommandSuggestion));
+
+    assert_eq!(store.state().ui.input_buffer, "/diagnose ");
+    assert_eq!(store.state().ui.command_palette_cursor, 0);
 }
 
 #[test]

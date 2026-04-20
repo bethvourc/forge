@@ -14,10 +14,10 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState, focused: bool
         Paragraph::new(lines)
             .block(
                 Block::default()
-                    .title(Span::styled(" Event Stream ", theme::panel_title(focused)))
+                    .title(Span::styled(" Event Tape ", theme::panel_title(focused)))
                     .borders(Borders::ALL)
                     .border_style(theme::pane_border(focused))
-                    .style(theme::primary().bg(theme::BG_BASE)),
+                    .style(theme::panel_surface(focused)),
             )
             .wrap(Wrap { trim: false }),
         area,

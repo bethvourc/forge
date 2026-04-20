@@ -10,10 +10,10 @@ use crate::ui::theme;
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState, focused: bool) {
     let block = Block::default()
-        .title(Span::styled(" Dashboard ", theme::panel_title(focused)))
+        .title(Span::styled(" Ops Surface ", theme::panel_title(focused)))
         .borders(Borders::ALL)
         .border_style(theme::pane_border(focused))
-        .style(theme::primary().bg(theme::BG_BASE));
+        .style(theme::panel_surface(focused));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -284,7 +284,7 @@ fn render_tabs(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         content.push(tab);
     }
     content.push(Span::raw("  "));
-    content.push(Span::styled("Left/Right", theme::accent()));
+    content.push(Span::styled("Left/Right", theme::keycap()));
     content.push(Span::styled(" switch tabs", theme::muted()));
 
     frame.render_widget(

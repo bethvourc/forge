@@ -7,7 +7,7 @@ use tracing::{error, info};
 
 use crate::ai::AiRuntime;
 use crate::app::{AppAction, AppEvent, AppStore, Effect, UiIntent};
-use crate::commands::ParsedInput;
+use crate::commands::{slash_palette_active, ParsedInput};
 use crate::domain::FocusTarget;
 use crate::observability::ObservabilityHandle;
 use crate::runtime::RuntimeSupervisor;
@@ -149,6 +149,10 @@ fn map_key_event(key: KeyEvent, state: &crate::domain::AppState) -> Option<AppAc
         return None;
     }
 
+    let command_palette_active = matches!(state.ui.focus, FocusTarget::CommandPane)
+        && state.ui.modal.is_none()
+        && slash_palette_active(&state.ui.input_buffer);
+
     if matches!(key.code, KeyCode::F(1)) {
         return Some(AppAction::ParsedInput(ParsedInput::Help));
     }
@@ -160,8 +164,17 @@ fn map_key_event(key: KeyEvent, state: &crate::domain::AppState) -> Option<AppAc
         KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             Some(AppAction::Ui(UiIntent::ClearInput))
         }
+        KeyCode::Tab if command_palette_active => {
+            Some(AppAction::Ui(UiIntent::AcceptCommandSuggestion))
+        }
         KeyCode::Tab => Some(AppAction::Ui(UiIntent::NextFocus)),
         KeyCode::BackTab => Some(AppAction::Ui(UiIntent::PrevFocus)),
+        KeyCode::Up if command_palette_active => {
+            Some(AppAction::Ui(UiIntent::PrevCommandSuggestion))
+        }
+        KeyCode::Down if command_palette_active => {
+            Some(AppAction::Ui(UiIntent::NextCommandSuggestion))
+        }
         KeyCode::Left
             if key.modifiers.is_empty()
                 && matches!(state.ui.focus, FocusTarget::DashboardPane)

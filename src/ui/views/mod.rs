@@ -5,11 +5,18 @@ mod modal;
 mod status_bar;
 
 use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::widgets::Block;
 use ratatui::Frame;
 
 use crate::domain::{AppState, FocusTarget};
+use crate::ui::theme;
 
 pub fn render(frame: &mut Frame<'_>, state: &AppState) {
+    frame.render_widget(
+        Block::default().style(theme::panel_surface(false)),
+        frame.area(),
+    );
+
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([

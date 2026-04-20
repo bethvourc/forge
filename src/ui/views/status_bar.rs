@@ -3,6 +3,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
+use crate::commands::slash_palette_active;
 use crate::domain::AppState;
 use crate::ui::theme;
 
@@ -54,12 +55,13 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     frame.render_widget(
         Block::default()
             .borders(Borders::BOTTOM)
-            .border_style(theme::pane_border(false)),
+            .border_style(theme::pane_border(false))
+            .style(theme::panel_surface(false)),
         area,
     );
 
     let row1 = Line::from(vec![
-        Span::styled(" Forge ", theme::status_badge(theme::ACCENT)),
+        Span::styled(" FORGE ", theme::status_badge(theme::ACCENT)),
         Span::raw(" "),
         badge(
             "GIT",
@@ -160,35 +162,53 @@ fn contextual_hint_line(state: &AppState) -> Line<'static> {
             ])
         }
         None => match state.ui.focus {
-            crate::domain::FocusTarget::CommandPane => Line::from(vec![
-                Span::styled("Enter", theme::accent()),
-                Span::styled(" run", theme::muted()),
-                Span::raw("  "),
-                Span::styled("Tab", theme::accent()),
-                Span::styled(" next pane", theme::muted()),
-                Span::raw("  "),
-                Span::styled("/help", theme::accent()),
-                Span::styled(" commands", theme::muted()),
-            ]),
+            crate::domain::FocusTarget::CommandPane => {
+                if slash_palette_active(&state.ui.input_buffer) {
+                    Line::from(vec![
+                        Span::styled("↑/↓", theme::keycap()),
+                        Span::styled(" choose", theme::muted()),
+                        Span::raw("  "),
+                        Span::styled("Tab", theme::keycap()),
+                        Span::styled(" insert", theme::muted()),
+                        Span::raw("  "),
+                        Span::styled("Enter", theme::keycap()),
+                        Span::styled(" run", theme::muted()),
+                    ])
+                } else {
+                    Line::from(vec![
+                        Span::styled("/", theme::keycap()),
+                        Span::styled(" palette", theme::muted()),
+                        Span::raw("  "),
+                        Span::styled("Enter", theme::keycap()),
+                        Span::styled(" run", theme::muted()),
+                        Span::raw("  "),
+                        Span::styled("Tab", theme::keycap()),
+                        Span::styled(" next pane", theme::muted()),
+                        Span::raw("  "),
+                        Span::styled("/help", theme::accent()),
+                        Span::styled(" commands", theme::muted()),
+                    ])
+                }
+            }
             crate::domain::FocusTarget::DashboardPane => Line::from(vec![
-                Span::styled("Left/Right", theme::accent()),
+                Span::styled("Left/Right", theme::keycap()),
                 Span::styled(" switch tabs", theme::muted()),
                 Span::raw("  "),
-                Span::styled("Tab", theme::accent()),
+                Span::styled("Tab", theme::keycap()),
                 Span::styled(" next pane", theme::muted()),
                 Span::raw("  "),
-                Span::styled("F1", theme::accent()),
+                Span::styled("F1", theme::keycap()),
                 Span::styled(" help", theme::muted()),
             ]),
             crate::domain::FocusTarget::EventStream => Line::from(vec![
-                Span::styled("Tab", theme::accent()),
+                Span::styled("Tab", theme::keycap()),
                 Span::styled(" next pane", theme::muted()),
                 Span::raw("  "),
-                Span::styled("F1", theme::accent()),
+                Span::styled("F1", theme::keycap()),
                 Span::styled(" help", theme::muted()),
             ]),
             crate::domain::FocusTarget::Modal => Line::from(vec![
-                Span::styled("Esc", theme::accent()),
+                Span::styled("Esc", theme::keycap()),
                 Span::styled(" close", theme::muted()),
             ]),
         },
