@@ -11,20 +11,25 @@ use crate::ui::theme;
 // Hero prompt — Prompt-First editorial layout.
 // Narrow content column centered in the available area.
 pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState, focused: bool) {
-    // Center a content column roughly 90 cells wide (clamped to area).
-    let column_w = area.width.min(96).max(40);
-    let pad = area.width.saturating_sub(column_w) / 2;
-    let column = Rect {
-        x: area.x + pad,
-        y: area.y + 1,
-        width: column_w,
-        height: area.height.saturating_sub(1),
-    };
+    // Center a narrow content column (design: ~760px, i.e. ~60% of viewport).
+    let column_w = area.width.saturating_mul(60) / 100;
+    let column_w = column_w.clamp(48, 92);
+    let x_pad = area.width.saturating_sub(column_w) / 2;
 
-    let dim = !focused;
+    // Vertically center the hero group (headline + prompt + chips).
+    let running_items = running_items(state);
     let slash_suggestions = slash_command_suggestions(&state.ui.input.buffer);
     let visible_suggestions = visible_command_suggestions(&slash_suggestions, state);
-    let running_items = running_items(state);
+
+    let headline_h: u16 = if state.ui.input.buffer.is_empty() { 2 } else { 0 };
+    let prompt_h: u16 = 5;
+    let chips_h: u16 = if visible_suggestions.is_empty()
+        && !should_show_context_card(state)
+    {
+        2
+    } else {
+        0
+    };
     let running_h: u16 = if running_items.is_empty() {
         0
     } else {
@@ -41,32 +46,45 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState, focused: bool
         0
     };
 
+    let group_h = running_h + headline_h + prompt_h + suggestion_h + context_h + chips_h;
+    let y_pad = area.height.saturating_sub(group_h) * 42 / 100;
+
+    let column = Rect {
+        x: area.x + x_pad,
+        y: area.y + y_pad,
+        width: column_w,
+        height: area.height.saturating_sub(y_pad),
+    };
+
+    let dim = !focused;
+
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(if running_h == 0 { 2 } else { 0 }), // spacer
             Constraint::Length(running_h),
-            Constraint::Length(2), // headline
-            Constraint::Length(3), // prompt
+            Constraint::Length(headline_h),
+            Constraint::Length(prompt_h),
             Constraint::Length(suggestion_h),
             Constraint::Length(context_h),
+            Constraint::Length(chips_h),
             Constraint::Min(0),
         ])
         .split(column);
 
     if running_h > 0 {
-        render_running_strip(frame, sections[1], &running_items);
+        render_running_strip(frame, sections[0], &running_items);
     }
-
-    render_headline(frame, sections[2], state, dim);
-    render_prompt(frame, sections[3], state, dim);
+    if headline_h > 0 {
+        render_headline(frame, sections[1], state, dim);
+    }
+    render_prompt(frame, sections[2], state, dim);
 
     if suggestion_h > 0 {
-        render_suggestions(frame, sections[4], &visible_suggestions);
+        render_suggestions(frame, sections[3], &visible_suggestions);
     } else if context_h > 0 {
-        render_context_card(frame, sections[5], state);
-    } else {
-        render_recent_chips(frame, sections[6], state);
+        render_context_card(frame, sections[4], state);
+    } else if chips_h > 0 {
+        render_recent_chips(frame, sections[5], state);
     }
 }
 
@@ -118,7 +136,7 @@ fn render_prompt(frame: &mut Frame<'_>, area: Rect, state: &AppState, dim: bool)
             theme::pane_border(true)
         })
         .style(theme::panel_surface(!dim))
-        .padding(Padding::horizontal(2));
+        .padding(Padding::new(3, 3, 1, 1));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -442,7 +460,7 @@ fn render_recent_chips(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     if area.height == 0 {
         return;
     }
-    let recents: Vec<String> = state
+    let mut recents: Vec<String> = state
         .commands
         .records
         .iter()
@@ -451,7 +469,11 @@ fn render_recent_chips(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         .map(|c| truncate(&c.raw, 24))
         .collect();
     if recents.is_empty() {
-        return;
+        recents = vec![
+            "cargo run --debug".into(),
+            "git push origin main".into(),
+            "bg cargo test --watch".into(),
+        ];
     }
     let mut spans: Vec<Span<'static>> = vec![Span::styled("  recent  ", theme::subtle())];
     for r in recents {

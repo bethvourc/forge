@@ -35,14 +35,27 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         })
         .count();
 
-    let left = vec![
-        Span::raw("  "),
-        Span::styled("forge", theme::italic_serif()),
-        Span::styled("  /  ", theme::subtle()),
-        Span::styled(project, theme::muted()),
-        Span::styled("  /  ", theme::subtle()),
-        Span::styled(truncate_middle(&branch, 22), theme::muted()),
-    ];
+    let short_branch = branch
+        .rsplit_once('/')
+        .map(|(_, tail)| tail.to_string())
+        .unwrap_or_else(|| branch.clone());
+    let left = if project.eq_ignore_ascii_case("forge") {
+        vec![
+            Span::raw("  "),
+            Span::styled("forge", theme::italic_serif()),
+            Span::styled("  /  ", theme::subtle()),
+            Span::styled(truncate_middle(&short_branch, 24), theme::muted()),
+        ]
+    } else {
+        vec![
+            Span::raw("  "),
+            Span::styled("forge", theme::italic_serif()),
+            Span::styled("  /  ", theme::subtle()),
+            Span::styled(project, theme::muted()),
+            Span::styled("  /  ", theme::subtle()),
+            Span::styled(truncate_middle(&short_branch, 22), theme::muted()),
+        ]
+    };
 
     let mut right: Vec<Span<'static>> = Vec::new();
     if running > 0 {
@@ -66,6 +79,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     right.push(Span::styled(truncate_end(&head, 8), theme::subtle()));
     right.push(Span::raw("  "));
 
+    let left_len = left.len();
     let mut spans = left;
     spans.extend(right);
 
@@ -85,8 +99,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     };
 
     // Extract left portion from our combined spans — actually we built them separately
-    let left_spans = spans[..6].to_vec();
-    let right_spans = spans[6..].to_vec();
+    let left_spans = spans[..left_len].to_vec();
+    let right_spans = spans[left_len..].to_vec();
 
     frame.render_widget(
         Paragraph::new(Line::from(left_spans)).style(theme::chrome_surface()),
