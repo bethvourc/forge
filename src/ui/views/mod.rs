@@ -17,40 +17,41 @@ pub fn render(frame: &mut Frame<'_>, state: &AppState) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),
-            Constraint::Min(12),
-            Constraint::Length(state.config.ui.event_stream_height),
+            Constraint::Length(1), // minimal top bar
+            Constraint::Min(8),    // main stage
+            Constraint::Length(1), // bottom rail (collapsed activity + hints)
         ])
         .split(frame.area());
 
     status_bar::render(frame, layout[0], state);
 
-    let main = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(state.config.ui.main_split_pct),
-            Constraint::Percentage(100 - state.config.ui.main_split_pct),
-        ])
-        .spacing(1)
-        .split(layout[1]);
+    let ops_open = matches!(
+        state.ui.focus,
+        FocusTarget::DashboardPane | FocusTarget::EventStream
+    );
 
-    command_pane::render(
-        frame,
-        main[0],
-        state,
-        matches!(state.ui.focus, FocusTarget::CommandPane),
-    );
-    dashboard::render(
-        frame,
-        main[1],
-        state,
-        matches!(state.ui.focus, FocusTarget::DashboardPane),
-    );
-    event_stream::render(
-        frame,
-        layout[2],
-        state,
-        matches!(state.ui.focus, FocusTarget::EventStream),
-    );
+    if ops_open {
+        // Drawer-over-prompt layout: left 48% dimmed prompt, right 52% ops.
+        let main = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(48), Constraint::Percentage(52)])
+            .split(layout[1]);
+        command_pane::render(frame, main[0], state, false);
+        dashboard::render(
+            frame,
+            main[1],
+            state,
+            matches!(state.ui.focus, FocusTarget::DashboardPane),
+        );
+    } else {
+        command_pane::render(
+            frame,
+            layout[1],
+            state,
+            matches!(state.ui.focus, FocusTarget::CommandPane),
+        );
+    }
+
+    event_stream::render(frame, layout[2], state, false);
     modal::render(frame, state);
 }

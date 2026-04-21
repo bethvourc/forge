@@ -2,30 +2,33 @@ use ratatui::style::{Color, Modifier, Style};
 
 use crate::domain::{LogSeverity, NotificationLevel, ServiceHealth, TimelineKind};
 
-pub const BG_BASE: Color = Color::Rgb(7, 11, 17);
-pub const BG_ELEVATED: Color = Color::Rgb(12, 17, 25);
-pub const BG_PANEL: Color = Color::Rgb(16, 22, 32);
-pub const BG_PANEL_FOCUS: Color = Color::Rgb(20, 27, 39);
-pub const BG_CHROME: Color = Color::Rgb(24, 31, 44);
-pub const BG_SELECTION: Color = Color::Rgb(30, 44, 58);
-pub const PANEL_BORDER: Color = Color::Rgb(60, 73, 91);
-pub const PANEL_BORDER_SUBTLE: Color = Color::Rgb(40, 50, 64);
-pub const PANEL_FOCUS: Color = Color::Rgb(122, 220, 198);
-pub const TEXT_PRIMARY: Color = Color::Rgb(236, 240, 244);
-pub const TEXT_MUTED: Color = Color::Rgb(170, 181, 193);
-pub const TEXT_SUBTLE: Color = Color::Rgb(108, 121, 137);
-pub const ACCENT: Color = Color::Rgb(122, 220, 198);
-pub const SUCCESS: Color = Color::Rgb(150, 216, 138);
-pub const WARN: Color = Color::Rgb(236, 190, 90);
-pub const ERROR: Color = Color::Rgb(229, 113, 98);
-pub const INFO: Color = Color::Rgb(119, 167, 255);
+// Editorial light palette — warm off-white canvas, near-black ink, teal accent.
+// Sourced from the Forge Prompt-First hi-fi design.
+pub const BG_BASE: Color = Color::Rgb(240, 238, 233); // warm off-white #f0eee9
+pub const BG_ELEVATED: Color = Color::Rgb(246, 243, 236); // #f6f3ec
+pub const BG_PANEL: Color = Color::Rgb(251, 249, 243); // card surface #fbf9f3
+pub const BG_PANEL_FOCUS: Color = Color::Rgb(251, 249, 243);
+pub const BG_CHROME: Color = Color::Rgb(235, 231, 221);
+pub const BG_SELECTION: Color = Color::Rgb(221, 237, 232); // teal-wash
+pub const PANEL_BORDER: Color = Color::Rgb(45, 157, 143);
+pub const PANEL_BORDER_SUBTLE: Color = Color::Rgb(220, 216, 205); // hair
+pub const PANEL_FOCUS: Color = Color::Rgb(45, 157, 143);
+pub const TEXT_PRIMARY: Color = Color::Rgb(29, 29, 27); // near-black ink
+pub const TEXT_MUTED: Color = Color::Rgb(74, 74, 70);
+pub const TEXT_SUBTLE: Color = Color::Rgb(140, 140, 136); // faint
+pub const ACCENT: Color = Color::Rgb(45, 157, 143); // teal #2d9d8f
+pub const ACCENT_SOFT: Color = Color::Rgb(221, 237, 232);
+pub const SUCCESS: Color = Color::Rgb(45, 157, 143);
+pub const WARN: Color = Color::Rgb(200, 138, 46); // #c88a2e
+pub const ERROR: Color = Color::Rgb(179, 62, 46);
+pub const INFO: Color = Color::Rgb(66, 104, 161);
 
 pub fn app_surface() -> Style {
-    Style::default().bg(BG_BASE)
+    Style::default().bg(BG_BASE).fg(TEXT_PRIMARY)
 }
 
 pub fn chrome_surface() -> Style {
-    Style::default().bg(BG_ELEVATED)
+    Style::default().bg(BG_BASE).fg(TEXT_PRIMARY)
 }
 
 pub fn pane_border(focused: bool) -> Style {
@@ -37,23 +40,25 @@ pub fn pane_border(focused: bool) -> Style {
 }
 
 pub fn panel_surface(focused: bool) -> Style {
-    Style::default().bg(if focused { BG_PANEL_FOCUS } else { BG_PANEL })
+    Style::default()
+        .bg(if focused { BG_PANEL_FOCUS } else { BG_PANEL })
+        .fg(TEXT_PRIMARY)
 }
 
 pub fn panel_title(focused: bool) -> Style {
     Style::default()
         .fg(if focused { TEXT_PRIMARY } else { TEXT_MUTED })
-        .add_modifier(Modifier::BOLD)
+        .add_modifier(Modifier::ITALIC)
 }
 
 pub fn section_title() -> Style {
-    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
-}
-
-pub fn label() -> Style {
     Style::default()
         .fg(TEXT_SUBTLE)
         .add_modifier(Modifier::BOLD)
+}
+
+pub fn label() -> Style {
+    Style::default().fg(TEXT_SUBTLE)
 }
 
 pub fn primary() -> Style {
@@ -86,20 +91,37 @@ pub fn error_accent() -> Style {
     Style::default().fg(ERROR).add_modifier(Modifier::BOLD)
 }
 
+pub fn italic_serif() -> Style {
+    Style::default()
+        .fg(TEXT_PRIMARY)
+        .add_modifier(Modifier::ITALIC)
+}
+
+pub fn italic_muted() -> Style {
+    Style::default()
+        .fg(TEXT_MUTED)
+        .add_modifier(Modifier::ITALIC)
+}
+
 pub fn brand_badge() -> Style {
-    pill(BG_BASE, ACCENT)
+    pill(Color::White, ACCENT)
 }
 
 pub fn status_badge(bg: Color) -> Style {
-    pill(BG_BASE, bg)
+    pill(Color::White, bg)
 }
 
 pub fn quiet_badge() -> Style {
-    pill(TEXT_MUTED, BG_CHROME)
+    Style::default()
+        .fg(TEXT_MUTED)
+        .bg(BG_ELEVATED)
 }
 
 pub fn focus_badge() -> Style {
-    pill(PANEL_FOCUS, BG_CHROME)
+    Style::default()
+        .fg(Color::White)
+        .bg(ACCENT)
+        .add_modifier(Modifier::BOLD)
 }
 
 pub fn pill(fg: Color, bg: Color) -> Style {
@@ -108,15 +130,14 @@ pub fn pill(fg: Color, bg: Color) -> Style {
 
 pub fn keycap() -> Style {
     Style::default()
-        .fg(TEXT_PRIMARY)
-        .bg(BG_CHROME)
-        .add_modifier(Modifier::BOLD)
+        .fg(TEXT_MUTED)
+        .bg(BG_ELEVATED)
 }
 
 pub fn command_palette_item(selected: bool) -> Style {
     let mut style = Style::default()
         .fg(if selected { TEXT_PRIMARY } else { TEXT_MUTED })
-        .bg(if selected { BG_SELECTION } else { BG_PANEL });
+        .bg(if selected { ACCENT_SOFT } else { BG_PANEL });
     if selected {
         style = style.add_modifier(Modifier::BOLD);
     }
@@ -124,7 +145,7 @@ pub fn command_palette_item(selected: bool) -> Style {
 }
 
 pub fn command_palette_summary(selected: bool) -> Style {
-    Style::default().fg(if selected { TEXT_PRIMARY } else { TEXT_SUBTLE })
+    Style::default().fg(if selected { TEXT_MUTED } else { TEXT_SUBTLE })
 }
 
 pub fn notification_color(level: NotificationLevel) -> Color {
@@ -160,9 +181,9 @@ pub fn severity_color(severity: LogSeverity) -> Color {
 pub fn timeline_color(kind: TimelineKind) -> Color {
     match kind {
         TimelineKind::System => INFO,
-        TimelineKind::Ai => SUCCESS,
-        TimelineKind::Command => ACCENT,
-        TimelineKind::Log => TEXT_PRIMARY,
+        TimelineKind::Ai => ACCENT,
+        TimelineKind::Command => TEXT_PRIMARY,
+        TimelineKind::Log => TEXT_MUTED,
         TimelineKind::Approval => WARN,
         TimelineKind::Error => ERROR,
     }

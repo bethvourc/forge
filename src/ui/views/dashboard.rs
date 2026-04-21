@@ -10,11 +10,11 @@ use crate::ui::theme;
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState, focused: bool) {
     let block = Block::default()
-        .title(Span::styled(" Operations ", theme::panel_title(focused)))
-        .borders(Borders::ALL)
+        .title(Span::styled(" operations ", theme::panel_title(focused)))
+        .borders(Borders::LEFT)
         .border_style(theme::pane_border(focused))
         .style(theme::panel_surface(focused))
-        .padding(Padding::horizontal(1));
+        .padding(Padding::new(2, 2, 1, 1));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
