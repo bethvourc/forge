@@ -4,7 +4,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::domain::AppState;
-use crate::ui::theme;
+use crate::ui::{keys, theme};
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState, _focused: bool) {
     let latest = state
@@ -25,17 +25,17 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState, _focused: boo
     ];
 
     let right_spans = vec![
-        Span::styled(" Tab ", theme::keycap()),
+        Span::styled(format!(" {} ", keys::meta("O")), theme::keycap()),
         Span::styled(" ops", theme::muted()),
         Span::raw("   "),
-        Span::styled(" Ctrl+L ", theme::keycap()),
+        Span::styled(format!(" {} ", keys::meta("L")), theme::keycap()),
         Span::styled(" activity", theme::muted()),
         Span::raw("   "),
-        Span::styled(" / ", theme::keycap()),
-        Span::styled(" commands", theme::muted()),
+        Span::styled(format!(" {} ", keys::meta("/")), theme::keycap()),
+        Span::styled(" ai", theme::muted()),
         Span::raw("   "),
-        Span::styled(" F2 ", theme::keycap()),
-        Span::styled(" mode", theme::muted()),
+        Span::styled(format!(" {} ", keys::meta("K")), theme::keycap()),
+        Span::styled(" commands", theme::muted()),
         Span::raw("  "),
     ];
 

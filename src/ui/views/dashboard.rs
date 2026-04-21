@@ -9,43 +9,295 @@ use crate::shared::time::format_timestamp;
 use crate::ui::theme;
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState, focused: bool) {
+    // Outer drawer surface with subtle left hairline.
     let block = Block::default()
-        .title(Span::styled(" operations ", theme::panel_title(focused)))
         .borders(Borders::LEFT)
         .border_style(theme::pane_border(focused))
         .style(theme::panel_surface(focused))
-        .padding(Padding::new(2, 2, 1, 1));
+        .padding(Padding::new(3, 3, 1, 1));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),
-            Constraint::Length(2),
-            Constraint::Min(8),
+            Constraint::Length(2), // drawer header
+            Constraint::Length(2), // tabs
+            Constraint::Length(1), // tab underline / spacer
+            Constraint::Min(6),    // content
+            Constraint::Length(3), // footer hint
         ])
         .split(inner);
 
-    render_overview(frame, sections[0], state);
+    render_drawer_header(frame, sections[0]);
     render_tabs(frame, sections[1], state);
+    render_tabs_separator(frame, sections[2]);
 
-    let lines = match state.ui.dashboard_tab {
-        DashboardTab::Services => services_lines(state),
-        DashboardTab::Processes => processes_lines(state),
-        DashboardTab::Logs => log_lines(state),
-        DashboardTab::Git => git_lines(state),
-        DashboardTab::Tests => test_lines(state),
-    };
+    match state.ui.dashboard_tab {
+        DashboardTab::Services => render_services(frame, sections[3], state),
+        DashboardTab::Processes => render_lines(frame, sections[3], processes_lines(state)),
+        DashboardTab::Logs => render_lines(frame, sections[3], log_lines(state)),
+        DashboardTab::Git => render_lines(frame, sections[3], git_lines(state)),
+        DashboardTab::Tests => render_lines(frame, sections[3], test_lines(state)),
+    }
 
+    render_drawer_footer(frame, sections[4], state);
+}
+
+fn render_lines(frame: &mut Frame<'_>, area: Rect, lines: Vec<Line<'static>>) {
     frame.render_widget(
         Paragraph::new(lines)
             .block(Block::default())
             .wrap(Wrap { trim: false }),
-        sections[2],
+        area,
     );
 }
 
+fn render_drawer_header(frame: &mut Frame<'_>, area: Rect) {
+    let mid = area.width / 2;
+    let left = Rect {
+        x: area.x,
+        y: area.y,
+        width: mid,
+        height: 1,
+    };
+    let right = Rect {
+        x: area.x + mid,
+        y: area.y,
+        width: area.width.saturating_sub(mid),
+        height: 1,
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            "operations",
+            theme::italic_serif(),
+        )])),
+        left,
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" Esc ", theme::keycap()),
+            Span::styled(" close", theme::muted()),
+        ]))
+        .alignment(ratatui::layout::Alignment::Right),
+        right,
+    );
+}
+
+fn render_tabs_separator(frame: &mut Frame<'_>, area: Rect) {
+    // Render a hairline under the tab row.
+    let line = "─".repeat(area.width as usize);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(line, theme::subtle())])),
+        area,
+    );
+}
+
+fn render_services(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    if state.services.registry.is_empty() {
+        let lines = vec![
+            Line::raw(""),
+            Line::from(vec![Span::styled(
+                "No managed services yet.",
+                theme::muted(),
+            )]),
+            Line::raw(""),
+            Line::from(vec![
+                Span::styled("Launch one with ", theme::subtle()),
+                Span::styled("/bg cargo run", theme::accent()),
+                Span::styled(" or any shell command that ends with ", theme::subtle()),
+                Span::styled("&", theme::accent()),
+                Span::styled(".", theme::subtle()),
+            ]),
+        ];
+        render_lines(frame, area, lines);
+        return;
+    }
+
+    let mut y = area.y;
+    for (i, s) in state.services.registry.iter().rev().take(3).enumerate() {
+        let card_h: u16 = 7;
+        if y + card_h > area.y + area.height {
+            break;
+        }
+        let card = Rect {
+            x: area.x,
+            y,
+            width: area.width,
+            height: card_h,
+        };
+        render_service_card(frame, card, s, state, i);
+        y += card_h + 1;
+    }
+}
+
+fn render_service_card(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    service: &crate::domain::ServiceRecord,
+    state: &AppState,
+    _index: usize,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme::pane_border(false))
+        .style(theme::panel_surface(false))
+        .padding(Padding::new(2, 2, 0, 0));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let port = service
+        .ports
+        .first()
+        .map(|p| format!(":{p}"))
+        .unwrap_or_default();
+    let cmd = state
+        .commands
+        .records
+        .iter()
+        .find(|c| Some(c.id) == service.linked_command)
+        .map(|c| c.raw.clone())
+        .unwrap_or_else(|| format!("{:?} service", service.source).to_lowercase());
+    let uptime = service
+        .last_seen
+        .elapsed()
+        .map(|d| {
+            let secs = d.as_secs();
+            if secs < 60 {
+                format!("{secs}s")
+            } else {
+                format!("{}m {}s", secs / 60, secs % 60)
+            }
+        })
+        .unwrap_or_else(|_| "—".to_string());
+
+    let mid = inner.width / 2;
+    let header_left = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: mid,
+        height: 1,
+    };
+    let header_right = Rect {
+        x: inner.x + mid,
+        y: inner.y,
+        width: inner.width.saturating_sub(mid),
+        height: 1,
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("● ", theme::accent()),
+            Span::styled(service.name.clone(), theme::primary_emphasis()),
+            Span::raw("  "),
+            Span::styled(port, theme::accent()),
+        ])),
+        header_left,
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" logs ", theme::keycap()),
+            Span::raw(" "),
+            Span::styled(" restart ", theme::keycap()),
+            Span::raw(" "),
+            Span::styled(" stop ", theme::keycap()),
+        ]))
+        .alignment(ratatui::layout::Alignment::Right),
+        header_right,
+    );
+
+    // Command line.
+    let cmd_row = Rect {
+        x: inner.x,
+        y: inner.y + 1,
+        width: inner.width,
+        height: 1,
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            truncate(&cmd, 60),
+            theme::muted(),
+        )])),
+        cmd_row,
+    );
+
+    // Stats row (PID / UP / CPU / MEM).
+    let stats_row = Rect {
+        x: inner.x,
+        y: inner.y + 2,
+        width: inner.width,
+        height: 1,
+    };
+    let pid_str = service.pid.map(|p| p.to_string()).unwrap_or_else(|| "—".into());
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("PID ", theme::subtle()),
+            Span::styled(format!("{:<8}", pid_str), theme::muted()),
+            Span::styled("UP ", theme::subtle()),
+            Span::styled(format!("{:<10}", uptime), theme::muted()),
+            Span::styled("CPU ", theme::subtle()),
+            Span::styled("—      ", theme::muted()),
+            Span::styled("MEM ", theme::subtle()),
+            Span::styled("—", theme::muted()),
+        ])),
+        stats_row,
+    );
+
+    // Sparkline row — single line using block chars.
+    let spark_row = Rect {
+        x: inner.x,
+        y: inner.y + 3,
+        width: inner.width,
+        height: 1,
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            sparkline_text(inner.width as usize),
+            theme::accent(),
+        )])),
+        spark_row,
+    );
+}
+
+fn sparkline_text(width: usize) -> String {
+    const CHARS: &[char] = &['▁', '▂', '▃', '▄', '▅', '▄', '▃', '▄', '▅', '▆', '▅', '▄'];
+    let mut out = String::new();
+    for i in 0..width {
+        out.push(CHARS[i % CHARS.len()]);
+    }
+    out
+}
+
+fn render_drawer_footer(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    if !matches!(state.ui.dashboard_tab, DashboardTab::Services) {
+        return;
+    }
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme::pane_border(false))
+        .style(theme::panel_surface(false));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("launch another with ", theme::subtle()),
+            Span::styled("/bg <cmd>", theme::primary()),
+            Span::styled(" or suffix ", theme::subtle()),
+            Span::styled("&", theme::primary()),
+        ]))
+        .alignment(ratatui::layout::Alignment::Center),
+        inner,
+    );
+}
+
+fn truncate(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let kept: String = value.chars().take(max_chars.saturating_sub(1)).collect();
+    format!("{kept}…")
+}
+
+#[allow(dead_code)]
 fn services_lines(state: &AppState) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(vec![
         Span::styled("Managed services", theme::section_title()),
@@ -278,6 +530,7 @@ fn test_lines(state: &AppState) -> Vec<Line<'static>> {
     lines
 }
 
+#[allow(dead_code)]
 fn render_overview(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let branch = state
         .git
@@ -334,42 +587,84 @@ fn render_overview(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 }
 
 fn render_tabs(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    let tabs = DashboardTab::all()
-        .iter()
-        .map(|tab| {
-            let active = *tab == state.ui.dashboard_tab;
-            let label = format!(" {} ", tab.title());
-            if active {
-                Span::styled(label, theme::status_badge(theme::ACCENT))
-            } else {
-                Span::styled(label, theme::quiet_badge())
-            }
-        })
-        .collect::<Vec<_>>();
-
-    let mut content = Vec::new();
-    for (index, tab) in tabs.into_iter().enumerate() {
-        if index > 0 {
-            content.push(Span::raw(" "));
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for tab in DashboardTab::all() {
+        let active = tab == state.ui.dashboard_tab;
+        let name_style = if active {
+            theme::primary_emphasis()
+        } else {
+            theme::muted()
+        };
+        spans.push(Span::styled(
+            format!("{}", tab.title().to_ascii_lowercase()),
+            name_style,
+        ));
+        let count = match tab {
+            DashboardTab::Services => state.services.registry.len(),
+            DashboardTab::Processes => state.processes.snapshots.len(),
+            DashboardTab::Logs => state.logs.recent.len(),
+            DashboardTab::Git => state.git.changed_files.len(),
+            DashboardTab::Tests => state.tests.recent_runs.len(),
+        };
+        if count > 0 {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                format!(" {count} "),
+                if active {
+                    theme::focus_badge()
+                } else {
+                    theme::quiet_badge()
+                },
+            ));
         }
-        content.push(tab);
+        spans.push(Span::raw("    "));
     }
-    content.push(Span::raw("  "));
-    content.push(Span::styled("Left/Right", theme::keycap()));
-    content.push(Span::styled(" switch tabs", theme::muted()));
+
+    // Underline marker row below.
+    let tab_line = Line::from(spans);
+
+    // Build underline segment roughly beneath active tab name.
+    let active_idx = DashboardTab::all()
+        .iter()
+        .position(|t| *t == state.ui.dashboard_tab)
+        .unwrap_or(0);
+    let underline = build_tab_underline(state, active_idx, area.width as usize);
 
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(content),
-            Line::from(vec![Span::styled(
-                active_tab_summary(state.ui.dashboard_tab),
-                theme::subtle(),
-            )]),
-        ]),
+        Paragraph::new(vec![tab_line, Line::from(underline)]),
         area,
     );
 }
 
+fn build_tab_underline(state: &AppState, active_idx: usize, _width: usize) -> Vec<Span<'static>> {
+    let mut acc = String::new();
+    for (i, tab) in DashboardTab::all().iter().enumerate() {
+        let title_len = tab.title().chars().count();
+        let count = match tab {
+            DashboardTab::Services => state.services.registry.len(),
+            DashboardTab::Processes => state.processes.snapshots.len(),
+            DashboardTab::Logs => state.logs.recent.len(),
+            DashboardTab::Git => state.git.changed_files.len(),
+            DashboardTab::Tests => state.tests.recent_runs.len(),
+        };
+        let badge_len = if count > 0 {
+            count.to_string().chars().count() + 3
+        } else {
+            0
+        };
+        let block_len = title_len + badge_len;
+        if i == active_idx {
+            return vec![
+                Span::raw(acc),
+                Span::styled("▔".repeat(block_len), theme::accent()),
+            ];
+        }
+        acc.push_str(&" ".repeat(block_len + 4));
+    }
+    vec![Span::raw(acc)]
+}
+
+#[allow(dead_code)]
 fn active_tab_summary(tab: DashboardTab) -> &'static str {
     match tab {
         DashboardTab::Services => "Long-lived services with health, PID, and launch visibility.",
