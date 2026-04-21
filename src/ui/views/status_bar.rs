@@ -1,12 +1,14 @@
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
 use crate::domain::AppState;
 use crate::ui::theme;
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    frame.render_widget(Block::default().style(theme::chrome_surface()), area);
+
     let branch = state
         .git
         .branch
@@ -35,25 +37,22 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         })
         .count();
 
-    let short_branch = branch
-        .rsplit_once('/')
-        .map(|(_, tail)| tail.to_string())
-        .unwrap_or_else(|| branch.clone());
+    let branch_display = truncate_middle(&branch_leaf(&branch), 28);
     let left = if project.eq_ignore_ascii_case("forge") {
         vec![
             Span::raw("  "),
             Span::styled("forge", theme::italic_serif()),
-            Span::styled("  /  ", theme::subtle()),
-            Span::styled(truncate_middle(&short_branch, 24), theme::muted()),
+            Span::styled("   /   ", theme::subtle()),
+            Span::styled(branch_display, theme::status_context()),
         ]
     } else {
         vec![
             Span::raw("  "),
             Span::styled("forge", theme::italic_serif()),
-            Span::styled("  /  ", theme::subtle()),
-            Span::styled(project, theme::muted()),
-            Span::styled("  /  ", theme::subtle()),
-            Span::styled(truncate_middle(&short_branch, 22), theme::muted()),
+            Span::styled("   /   ", theme::subtle()),
+            Span::styled(project, theme::status_context()),
+            Span::styled("   /   ", theme::subtle()),
+            Span::styled(branch_display, theme::status_context()),
         ]
     };
 
@@ -61,10 +60,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     if running > 0 {
         right.push(Span::styled("●", theme::accent()));
         right.push(Span::raw(" "));
-        right.push(Span::styled(
-            format!("{running} running"),
-            theme::primary(),
-        ));
+        right.push(Span::styled(format!("{running} running"), theme::primary()));
         right.push(Span::styled("  ·  ", theme::subtle()));
     }
     right.push(Span::styled(
@@ -79,39 +75,55 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     right.push(Span::styled(truncate_end(&head, 8), theme::subtle()));
     right.push(Span::raw("  "));
 
-    let left_len = left.len();
-    let mut spans = left;
-    spans.extend(right);
-
-    // Two paragraphs: left-aligned + right-aligned — split area in half.
-    let mid = area.width / 2;
-    let left_area = Rect {
+    let text_y = if area.height >= 3 { area.y + 1 } else { area.y };
+    let text_area = Rect {
         x: area.x,
-        y: area.y,
+        y: text_y,
+        width: area.width,
+        height: 1,
+    };
+
+    // Two paragraphs: left-aligned + right-aligned, matching the sparse wireframe bar.
+    let mid = text_area.width / 2;
+    let left_area = Rect {
+        x: text_area.x,
+        y: text_area.y,
         width: mid,
         height: 1,
     };
     let right_area = Rect {
-        x: area.x + mid,
-        y: area.y,
-        width: area.width.saturating_sub(mid),
+        x: text_area.x + mid,
+        y: text_area.y,
+        width: text_area.width.saturating_sub(mid),
         height: 1,
     };
 
-    // Extract left portion from our combined spans — actually we built them separately
-    let left_spans = spans[..left_len].to_vec();
-    let right_spans = spans[left_len..].to_vec();
-
     frame.render_widget(
-        Paragraph::new(Line::from(left_spans)).style(theme::chrome_surface()),
+        Paragraph::new(Line::from(left)).style(theme::chrome_surface()),
         left_area,
     );
     frame.render_widget(
-        Paragraph::new(Line::from(right_spans))
+        Paragraph::new(Line::from(right))
             .alignment(ratatui::layout::Alignment::Right)
             .style(theme::chrome_surface()),
         right_area,
     );
+
+    if area.height > 1 {
+        let separator = Rect {
+            x: area.x,
+            y: area.y + area.height - 1,
+            width: area.width,
+            height: 1,
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "─".repeat(area.width as usize),
+                theme::separator(),
+            ))),
+            separator,
+        );
+    }
 }
 
 fn truncate_end(value: &str, max_chars: usize) -> String {
@@ -141,4 +153,13 @@ fn truncate_middle(value: &str, max_chars: usize) -> String {
         .rev()
         .collect::<String>();
     format!("{start}…{end}")
+}
+
+fn branch_leaf(branch: &str) -> String {
+    branch
+        .rsplit('/')
+        .next()
+        .filter(|value| !value.is_empty())
+        .unwrap_or(branch)
+        .to_string()
 }

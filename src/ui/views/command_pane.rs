@@ -1,7 +1,7 @@
 use ratatui::layout::Rect;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Padding, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::commands::{slash_command_suggestions, SlashCommandSpec};
@@ -31,16 +31,18 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState, focused: bool
     let visible_slash = visible_command_suggestions(&slash_suggestions, state);
     let intent_suggestions = intent_suggestions(state);
 
-    let headline_h: u16 = if state.ui.input.buffer.is_empty() { 2 } else { 0 };
-    let prompt_h: u16 = 5;
-    let chips_h: u16 = if visible_slash.is_empty()
-        && intent_suggestions.is_empty()
-        && !should_show_context_card(state)
-    {
-        2
+    let headline_h: u16 = if state.ui.input.buffer.is_empty() {
+        1
     } else {
         0
     };
+    let gap_after_headline: u16 = if headline_h > 0 { 2 } else { 0 };
+    let prompt_h: u16 = 6;
+    let show_chips = visible_slash.is_empty()
+        && intent_suggestions.is_empty()
+        && !should_show_context_card(state);
+    let gap_after_prompt: u16 = if show_chips { 2 } else { 0 };
+    let chips_h: u16 = if show_chips { 1 } else { 0 };
     let running_h: u16 = if running_items.is_empty() {
         0
     } else {
@@ -63,8 +65,15 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState, focused: bool
         0
     };
 
-    let group_h = running_h + headline_h + prompt_h + suggestion_h + context_h + chips_h;
-    let y_pad = area.height.saturating_sub(group_h) * 42 / 100;
+    let group_h = running_h
+        + headline_h
+        + gap_after_headline
+        + prompt_h
+        + gap_after_prompt
+        + suggestion_h
+        + context_h
+        + chips_h;
+    let y_pad = area.height.saturating_sub(group_h) * 38 / 100;
 
     let column = Rect {
         x: area.x + x_pad,
@@ -80,7 +89,9 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState, focused: bool
         .constraints([
             Constraint::Length(running_h),
             Constraint::Length(headline_h),
+            Constraint::Length(gap_after_headline),
             Constraint::Length(prompt_h),
+            Constraint::Length(gap_after_prompt),
             Constraint::Length(suggestion_h),
             Constraint::Length(context_h),
             Constraint::Length(chips_h),
@@ -94,18 +105,18 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState, focused: bool
     if headline_h > 0 {
         render_headline(frame, sections[1], state, dim);
     }
-    render_prompt(frame, sections[2], state, dim);
+    render_prompt(frame, sections[3], state, dim);
 
     if suggestion_h > 0 {
         if slash_h > 0 {
-            render_slash_suggestions(frame, sections[3], &visible_slash);
+            render_slash_suggestions(frame, sections[5], &visible_slash);
         } else {
-            render_intent_suggestions(frame, sections[3], &intent_suggestions);
+            render_intent_suggestions(frame, sections[5], &intent_suggestions);
         }
     } else if context_h > 0 {
-        render_context_card(frame, sections[4], state);
+        render_context_card(frame, sections[6], state);
     } else if chips_h > 0 {
-        render_recent_chips(frame, sections[5], state);
+        render_recent_chips(frame, sections[7], state);
     }
 }
 
@@ -119,7 +130,7 @@ fn render_headline(frame: &mut Frame<'_>, area: Rect, state: &AppState, dim: boo
         let style = if dim {
             theme::subtle()
         } else {
-            theme::italic_muted()
+            theme::prompt_question()
         };
         frame.render_widget(
             Paragraph::new(Line::from(vec![Span::styled(text, style)])),
@@ -148,18 +159,41 @@ fn render_prompt(frame: &mut Frame<'_>, area: Rect, state: &AppState, dim: bool)
         }
     };
 
-    // Render a 3-line bordered box with the prompt.
+    let box_width = if area.width > 3 {
+        area.width - 1
+    } else {
+        area.width
+    };
+    let box_height = if area.height > 3 {
+        area.height - 1
+    } else {
+        area.height
+    };
+    let box_area = Rect {
+        x: area.x,
+        y: area.y,
+        width: box_width,
+        height: box_height,
+    };
+    if area.width > 2 && area.height > 2 {
+        let shadow = Rect {
+            x: area.x + 1,
+            y: area.y + 1,
+            width: area.width.saturating_sub(1),
+            height: area.height.saturating_sub(1),
+        };
+        frame.render_widget(Block::default().style(theme::prompt_shadow()), shadow);
+    }
+
+    // Render a rounded, wireframe-style prompt surface with a subtle hairline.
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(if dim {
-            theme::pane_border(false)
-        } else {
-            theme::pane_border(true)
-        })
-        .style(theme::panel_surface(!dim))
+        .border_type(BorderType::Rounded)
+        .border_style(theme::prompt_border())
+        .style(theme::prompt_surface())
         .padding(Padding::new(3, 3, 1, 1));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = block.inner(box_area);
+    frame.render_widget(block, box_area);
 
     let text_width = inner.width.saturating_sub(4) as usize;
     let display = render_prompt_text(buf, cursor, text_width);
@@ -172,8 +206,8 @@ fn render_prompt(frame: &mut Frame<'_>, area: Rect, state: &AppState, dim: bool)
         };
         vec![
             Span::styled(format!("{arrow_char}  "), arrow_color),
-            Span::styled(placeholder, theme::subtle()),
-            Span::styled("█", if dim { theme::subtle() } else { theme::primary() }),
+            Span::styled(placeholder, theme::prompt_placeholder()),
+            Span::styled("█", theme::prompt_cursor(dim)),
         ]
     } else {
         vec![
@@ -282,8 +316,7 @@ fn running_items(state: &AppState) -> Vec<RunItem> {
         .filter(|s| {
             matches!(
                 s.health,
-                crate::domain::ServiceHealth::Healthy
-                    | crate::domain::ServiceHealth::Starting
+                crate::domain::ServiceHealth::Healthy | crate::domain::ServiceHealth::Starting
             )
         })
         .take(3)
@@ -359,7 +392,10 @@ fn render_slash_suggestions(
             Span::raw(spacer),
         ];
         if *selected {
-            spans.push(Span::styled(format!(" {} ", keys::enter()), theme::keycap()));
+            spans.push(Span::styled(
+                format!(" {} ", keys::enter()),
+                theme::keycap(),
+            ));
         }
         lines.push(Line::from(spans));
     }
@@ -387,7 +423,8 @@ fn render_intent_suggestions(frame: &mut Frame<'_>, area: Rect, items: &[IntentS
         };
         let cmd_text = truncate(&it.cmd, 32);
         let hint = truncate(&it.hint, 30);
-        let used = 1 + pill_text.chars().count() + 2 + cmd_text.chars().count() + 2 + hint.chars().count();
+        let used =
+            1 + pill_text.chars().count() + 2 + cmd_text.chars().count() + 2 + hint.chars().count();
         let spacer = " ".repeat(width.saturating_sub(used).saturating_sub(6));
         let mut spans = vec![
             Span::raw(" "),
@@ -399,7 +436,10 @@ fn render_intent_suggestions(frame: &mut Frame<'_>, area: Rect, items: &[IntentS
             Span::raw("  "),
         ];
         if selected {
-            spans.push(Span::styled(format!(" {} ", keys::enter()), theme::keycap()));
+            spans.push(Span::styled(
+                format!(" {} ", keys::enter()),
+                theme::keycap(),
+            ));
         }
         lines.push(Line::from(spans));
     }
@@ -428,7 +468,10 @@ fn intent_suggestions(state: &AppState) -> Vec<IntentSuggestion> {
         },
         IntentSuggestion {
             mode: "AI",
-            cmd: format!("ai: what does {} do", truncate(buf.split_whitespace().next().unwrap_or(buf), 40)),
+            cmd: format!(
+                "ai: what does {} do",
+                truncate(buf.split_whitespace().next().unwrap_or(buf), 40)
+            ),
             hint: "ask the assistant".into(),
         },
     ];
@@ -479,11 +522,7 @@ fn render_context_card(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             AiStatus::Running | AiStatus::Queued | AiStatus::Failed | AiStatus::Completed
         );
     let (header_spans, body, footer_hint) = build_context_card(state);
-    let borders = if is_ai {
-        Borders::LEFT
-    } else {
-        Borders::ALL
-    };
+    let borders = if is_ai { Borders::LEFT } else { Borders::ALL };
     let block = Block::default()
         .borders(borders)
         .border_style(if is_ai {
@@ -499,10 +538,7 @@ fn render_context_card(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let mut lines = vec![Line::from(header_spans)];
     lines.push(Line::raw(""));
     lines.extend(body);
-    frame.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }),
-        inner,
-    );
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 
     // Hint line below the card (only when there is vertical room).
     if let Some(hint) = footer_hint {
@@ -521,7 +557,11 @@ fn render_context_card(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 
 fn build_context_card(
     state: &AppState,
-) -> (Vec<Span<'static>>, Vec<Line<'static>>, Option<Line<'static>>) {
+) -> (
+    Vec<Span<'static>>,
+    Vec<Line<'static>>,
+    Option<Line<'static>>,
+) {
     if let Some(approval) = state
         .approvals
         .pending
@@ -581,10 +621,7 @@ fn build_context_card(
         let header = vec![
             Span::styled(" AI ", theme::focus_badge()),
             Span::raw("  "),
-            Span::styled(
-                format!("{} · model {}", provider, model),
-                theme::subtle(),
-            ),
+            Span::styled(format!("{} · model {}", provider, model), theme::subtle()),
             Span::raw("  "),
             Span::styled(right_label, theme::subtle()),
         ];
@@ -605,10 +642,7 @@ fn build_context_card(
                 body.push(Line::raw(""));
                 for (i, rec) in resp.recommendations.iter().take(3).enumerate() {
                     body.push(Line::from(vec![
-                        Span::styled(
-                            format!("{}. ", i + 1),
-                            theme::subtle(),
-                        ),
+                        Span::styled(format!("{}. ", i + 1), theme::subtle()),
                         Span::styled(truncate(rec, 220), theme::muted()),
                     ]));
                 }
@@ -686,11 +720,7 @@ fn build_context_card(
             )])]
         } else {
             vec![Line::from(vec![Span::styled(
-                format!(
-                    "{}  ·  {}",
-                    cmd.safety_class.label(),
-                    cmd.cwd.display()
-                ),
+                format!("{}  ·  {}", cmd.safety_class.label(), cmd.cwd.display()),
                 theme::muted(),
             )])]
         };
@@ -726,10 +756,13 @@ fn render_recent_chips(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             "bg cargo test --watch".into(),
         ];
     }
-    let mut spans: Vec<Span<'static>> = vec![Span::styled("  recent  ", theme::subtle())];
-    for r in recents {
+    let mut spans: Vec<Span<'static>> = vec![Span::styled("recent   ", theme::subtle())];
+    let last = recents.len().saturating_sub(1);
+    for (i, r) in recents.into_iter().enumerate() {
         spans.push(Span::styled(format!(" {r} "), theme::quiet_badge()));
-        spans.push(Span::raw("  "));
+        if i != last {
+            spans.push(Span::styled("   ", theme::subtle()));
+        }
     }
     frame.render_widget(
         Paragraph::new(Line::from(spans)).wrap(Wrap { trim: true }),

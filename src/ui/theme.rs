@@ -9,9 +9,11 @@ pub const BG_ELEVATED: Color = Color::Rgb(246, 243, 236); // #f6f3ec
 pub const BG_PANEL: Color = Color::Rgb(251, 249, 243); // card surface #fbf9f3
 pub const BG_PANEL_FOCUS: Color = Color::Rgb(251, 249, 243);
 pub const BG_CHROME: Color = Color::Rgb(235, 231, 221);
+pub const BG_SHADOW: Color = Color::Rgb(229, 225, 216);
 pub const BG_SELECTION: Color = Color::Rgb(221, 237, 232); // teal-wash
 pub const PANEL_BORDER: Color = Color::Rgb(45, 157, 143);
 pub const PANEL_BORDER_SUBTLE: Color = Color::Rgb(220, 216, 205); // hair
+pub const PROMPT_BORDER: Color = Color::Rgb(222, 218, 207);
 pub const PANEL_FOCUS: Color = Color::Rgb(45, 157, 143);
 pub const TEXT_PRIMARY: Color = Color::Rgb(29, 29, 27); // near-black ink
 pub const TEXT_MUTED: Color = Color::Rgb(74, 74, 70);
@@ -43,6 +45,46 @@ pub fn panel_surface(focused: bool) -> Style {
     Style::default()
         .bg(if focused { BG_PANEL_FOCUS } else { BG_PANEL })
         .fg(TEXT_PRIMARY)
+}
+
+pub fn prompt_surface() -> Style {
+    Style::default().bg(BG_PANEL).fg(TEXT_PRIMARY)
+}
+
+pub fn prompt_border() -> Style {
+    Style::default().fg(PROMPT_BORDER)
+}
+
+pub fn prompt_shadow() -> Style {
+    Style::default().bg(BG_SHADOW)
+}
+
+pub fn prompt_question() -> Style {
+    Style::default()
+        .fg(TEXT_MUTED)
+        .add_modifier(Modifier::ITALIC | Modifier::BOLD)
+}
+
+pub fn prompt_placeholder() -> Style {
+    Style::default().fg(TEXT_SUBTLE).add_modifier(Modifier::DIM)
+}
+
+pub fn prompt_cursor(dimmed: bool) -> Style {
+    if dimmed {
+        subtle()
+    } else {
+        Style::default()
+            .fg(TEXT_PRIMARY)
+            .add_modifier(Modifier::BOLD)
+    }
+}
+
+pub fn separator() -> Style {
+    Style::default().fg(PANEL_BORDER_SUBTLE).bg(BG_BASE)
+}
+
+pub fn status_context() -> Style {
+    Style::default().fg(TEXT_SUBTLE)
 }
 
 pub fn panel_title(focused: bool) -> Style {
@@ -112,9 +154,7 @@ pub fn status_badge(bg: Color) -> Style {
 }
 
 pub fn quiet_badge() -> Style {
-    Style::default()
-        .fg(TEXT_MUTED)
-        .bg(BG_ELEVATED)
+    Style::default().fg(TEXT_MUTED).bg(BG_ELEVATED)
 }
 
 pub fn focus_badge() -> Style {
@@ -129,9 +169,7 @@ pub fn pill(fg: Color, bg: Color) -> Style {
 }
 
 pub fn keycap() -> Style {
-    Style::default()
-        .fg(TEXT_MUTED)
-        .bg(BG_ELEVATED)
+    Style::default().fg(TEXT_MUTED).bg(BG_ELEVATED)
 }
 
 pub fn command_palette_item(selected: bool) -> Style {

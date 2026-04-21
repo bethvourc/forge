@@ -17,9 +17,9 @@ pub fn render(frame: &mut Frame<'_>, state: &AppState) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // minimal top bar
+            Constraint::Length(3), // top identity bar + hairline
             Constraint::Min(8),    // main stage
-            Constraint::Length(1), // bottom rail (collapsed activity + hints)
+            Constraint::Length(2), // bottom activity rail + hairline
         ])
         .split(frame.area());
 

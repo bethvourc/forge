@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 use std::time::SystemTime;
 
+use ratatui::{backend::TestBackend, style::Modifier, Terminal};
+
 use forge::app::{AppAction, AppStore, Effect};
 use forge::commands::{parse_input, slash_command_suggestions, ParsedInput};
 use forge::config::ForgeConfig;
@@ -396,8 +398,115 @@ fn store_approve_without_pending_shows_notice() {
         .is_some_and(|notice| notice.message.contains("no pending approvals")));
 }
 
+#[test]
+fn ui_renders_prompt_first_wireframe_details() {
+    let mut state = AppState::new(
+        ForgeConfig::default(),
+        ProjectContext::default(),
+        GitSnapshot {
+            branch: Some("forge/foundation".to_string()),
+            head: Some("adc2ae2".to_string()),
+            ..GitSnapshot::default()
+        },
+    );
+    state.project.name = "forge".to_string();
+
+    let mut terminal = Terminal::new(TestBackend::new(140, 44)).unwrap();
+    terminal
+        .draw(|frame| forge::ui::render(frame, &state))
+        .unwrap();
+
+    let buffer = terminal.backend().buffer();
+    let rows = buffer_rows(buffer);
+    assert!(
+        rows[1].contains("forge   /   foundation"),
+        "status identity should read like the uploaded wireframe"
+    );
+    assert!(
+        rows[2].contains("────"),
+        "status bar should have a visible underline separator"
+    );
+
+    let (question_x, question_y) = find_text(&rows, "what do you want to do?")
+        .expect("empty command pane should render the wireframe question");
+    let question_cell = buffer.cell((question_x, question_y)).unwrap();
+    assert!(question_cell.modifier.contains(Modifier::ITALIC));
+    assert!(question_cell.modifier.contains(Modifier::BOLD));
+
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("╭") && row.contains("╮")),
+        "prompt box should use rounded wireframe corners"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("▸  run, ask, commit, deploy…█")),
+        "prompt box should keep the uploaded placeholder and cursor treatment"
+    );
+
+    let (prompt_x, prompt_y) =
+        find_symbol(buffer, "╭").expect("prompt box should have a top-left corner");
+    let (prompt_right_x, _) = find_symbol_on_row(buffer, prompt_y, "╮")
+        .expect("prompt box should have a top-right corner");
+    assert_eq!(
+        buffer.cell((prompt_right_x + 1, prompt_y + 1)).unwrap().bg,
+        forge::ui::theme::BG_SHADOW,
+        "prompt box should retain the subtle right-side shadow"
+    );
+    assert!(
+        prompt_x > 0,
+        "prompt box should be centered rather than pinned to the viewport edge"
+    );
+}
+
 fn test_store() -> AppStore {
     let config = ForgeConfig::default();
     let state = AppState::new(config, ProjectContext::default(), GitSnapshot::default());
     AppStore::new(state)
+}
+
+fn buffer_rows(buffer: &ratatui::buffer::Buffer) -> Vec<String> {
+    let area = *buffer.area();
+    (0..area.height)
+        .map(|y| {
+            (0..area.width)
+                .map(|x| buffer.cell((x, y)).unwrap().symbol())
+                .collect::<String>()
+        })
+        .collect()
+}
+
+fn find_text(rows: &[String], needle: &str) -> Option<(u16, u16)> {
+    rows.iter()
+        .enumerate()
+        .find_map(|(y, row)| row.find(needle).map(|x| (x as u16, y as u16)))
+}
+
+fn find_symbol(buffer: &ratatui::buffer::Buffer, symbol: &str) -> Option<(u16, u16)> {
+    let area = *buffer.area();
+    for y in 0..area.height {
+        for x in 0..area.width {
+            if buffer
+                .cell((x, y))
+                .is_some_and(|cell| cell.symbol() == symbol)
+            {
+                return Some((x, y));
+            }
+        }
+    }
+    None
+}
+
+fn find_symbol_on_row(
+    buffer: &ratatui::buffer::Buffer,
+    y: u16,
+    symbol: &str,
+) -> Option<(u16, u16)> {
+    let area = *buffer.area();
+    (0..area.width).find_map(|x| {
+        buffer
+            .cell((x, y))
+            .filter(|cell| cell.symbol() == symbol)
+            .map(|_| (x, y))
+    })
 }
