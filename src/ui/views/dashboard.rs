@@ -227,7 +227,10 @@ fn render_service_card(
         width: inner.width,
         height: 1,
     };
-    let pid_str = service.pid.map(|p| p.to_string()).unwrap_or_else(|| "—".into());
+    let pid_str = service
+        .pid
+        .map(|p| p.to_string())
+        .unwrap_or_else(|| "—".into());
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("PID ", theme::subtle()),
@@ -630,10 +633,7 @@ fn render_tabs(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         .unwrap_or(0);
     let underline = build_tab_underline(state, active_idx, area.width as usize);
 
-    frame.render_widget(
-        Paragraph::new(vec![tab_line, Line::from(underline)]),
-        area,
-    );
+    frame.render_widget(Paragraph::new(vec![tab_line, Line::from(underline)]), area);
 }
 
 fn build_tab_underline(state: &AppState, active_idx: usize, _width: usize) -> Vec<Span<'static>> {

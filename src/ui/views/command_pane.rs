@@ -11,10 +11,10 @@ use crate::ui::{keys, theme};
 
 // Intent suggestions shown while typing a non-slash command.
 #[derive(Clone)]
-struct IntentSuggestion {
-    mode: &'static str, // SHELL / BG / AI / HIST
-    cmd: String,
-    hint: String,
+pub(crate) struct IntentSuggestion {
+    pub mode: &'static str, // SHELL / BG / AI / HIST
+    pub cmd: String,
+    pub hint: String,
 }
 
 // Hero prompt — Prompt-First editorial layout.
@@ -111,7 +111,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState, focused: bool
         if slash_h > 0 {
             render_slash_suggestions(frame, sections[5], &visible_slash);
         } else {
-            render_intent_suggestions(frame, sections[5], &intent_suggestions);
+            render_intent_suggestions(
+                frame,
+                sections[5],
+                &intent_suggestions,
+                state.ui.command_palette_cursor,
+            );
         }
     } else if context_h > 0 {
         render_context_card(frame, sections[6], state);
@@ -402,14 +407,20 @@ fn render_slash_suggestions(
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
 }
 
-fn render_intent_suggestions(frame: &mut Frame<'_>, area: Rect, items: &[IntentSuggestion]) {
+fn render_intent_suggestions(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    items: &[IntentSuggestion],
+    cursor: usize,
+) {
     let mut lines = vec![
         Line::from(vec![Span::styled("SUGGESTIONS", theme::subtle())]),
         Line::raw(""),
     ];
     let width = area.width as usize;
+    let selected_idx = cursor.min(items.len().saturating_sub(1));
     for (i, it) in items.iter().enumerate() {
-        let selected = i == 0;
+        let selected = i == selected_idx;
         let pill_style = if selected {
             theme::focus_badge()
         } else {
@@ -446,7 +457,7 @@ fn render_intent_suggestions(frame: &mut Frame<'_>, area: Rect, items: &[IntentS
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
 }
 
-fn intent_suggestions(state: &AppState) -> Vec<IntentSuggestion> {
+pub(crate) fn intent_suggestions(state: &AppState) -> Vec<IntentSuggestion> {
     let buf = state.ui.input.buffer.trim();
     if buf.is_empty() || buf.starts_with('/') {
         return Vec::new();

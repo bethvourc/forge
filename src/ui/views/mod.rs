@@ -1,4 +1,6 @@
 mod command_pane;
+
+pub(crate) use command_pane::intent_suggestions;
 mod dashboard;
 mod event_stream;
 mod modal;

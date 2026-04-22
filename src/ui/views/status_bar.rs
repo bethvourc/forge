@@ -37,21 +37,21 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         })
         .count();
 
-    let branch_display = truncate_middle(&branch_leaf(&branch), 28);
+    let branch_display = truncate_middle(&branch, 32);
     let left = if project.eq_ignore_ascii_case("forge") {
         vec![
             Span::raw("  "),
             Span::styled("forge", theme::italic_serif()),
-            Span::styled("   /   ", theme::subtle()),
+            Span::styled("   │   ", theme::subtle()),
             Span::styled(branch_display, theme::status_context()),
         ]
     } else {
         vec![
             Span::raw("  "),
             Span::styled("forge", theme::italic_serif()),
-            Span::styled("   /   ", theme::subtle()),
+            Span::styled("   │   ", theme::subtle()),
             Span::styled(project, theme::status_context()),
-            Span::styled("   /   ", theme::subtle()),
+            Span::styled("   │   ", theme::subtle()),
             Span::styled(branch_display, theme::status_context()),
         ]
     };
@@ -153,13 +153,4 @@ fn truncate_middle(value: &str, max_chars: usize) -> String {
         .rev()
         .collect::<String>();
     format!("{start}…{end}")
-}
-
-fn branch_leaf(branch: &str) -> String {
-    branch
-        .rsplit('/')
-        .next()
-        .filter(|value| !value.is_empty())
-        .unwrap_or(branch)
-        .to_string()
 }

@@ -151,7 +151,8 @@ fn map_key_event(key: KeyEvent, state: &crate::domain::AppState) -> Option<AppAc
 
     let command_palette_active = matches!(state.ui.focus, FocusTarget::CommandPane)
         && state.ui.modal.is_none()
-        && slash_palette_active(&state.ui.input.buffer);
+        && (slash_palette_active(&state.ui.input.buffer)
+            || !crate::ui::views::intent_suggestions(state).is_empty());
 
     if matches!(key.code, KeyCode::F(1)) {
         return Some(AppAction::ParsedInput(ParsedInput::Help));

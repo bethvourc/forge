@@ -600,26 +600,32 @@ impl AppStore {
         }
     }
 
+    fn active_suggestion_len(&self) -> usize {
+        let slash = slash_command_suggestions(&self.state.ui.input.buffer).len();
+        if slash > 0 {
+            return slash;
+        }
+        crate::ui::views::intent_suggestions(&self.state).len()
+    }
+
     fn sync_command_palette_cursor(&mut self) {
-        let suggestions = slash_command_suggestions(&self.state.ui.input.buffer);
-        if suggestions.is_empty() {
+        let len = self.active_suggestion_len();
+        if len == 0 {
             self.state.ui.command_palette_cursor = 0;
             return;
         }
 
-        if self.state.ui.command_palette_cursor >= suggestions.len() {
-            self.state.ui.command_palette_cursor = suggestions.len().saturating_sub(1);
+        if self.state.ui.command_palette_cursor >= len {
+            self.state.ui.command_palette_cursor = len.saturating_sub(1);
         }
     }
 
     fn move_command_palette_cursor(&mut self, forward: bool) {
-        let suggestions = slash_command_suggestions(&self.state.ui.input.buffer);
-        if suggestions.is_empty() {
+        let len = self.active_suggestion_len();
+        if len == 0 {
             self.state.ui.command_palette_cursor = 0;
             return;
         }
-
-        let len = suggestions.len();
         let current = self
             .state
             .ui
@@ -635,26 +641,38 @@ impl AppStore {
     }
 
     fn accept_command_suggestion(&mut self) {
-        let suggestions = slash_command_suggestions(&self.state.ui.input.buffer);
-        if suggestions.is_empty() {
+        let slash = slash_command_suggestions(&self.state.ui.input.buffer);
+        if !slash.is_empty() {
+            let index = self
+                .state
+                .ui
+                .command_palette_cursor
+                .min(slash.len().saturating_sub(1));
+            let suggestion = slash[index];
+            self.state
+                .ui
+                .input
+                .set_buffer(suggestion.completion.to_string());
+            if !suggestion.accepts_arguments() {
+                self.state.ui.command_palette_cursor = index;
+            } else {
+                self.state.ui.command_palette_cursor = 0;
+            }
             return;
         }
 
+        let intents = crate::ui::views::intent_suggestions(&self.state);
+        if intents.is_empty() {
+            return;
+        }
         let index = self
             .state
             .ui
             .command_palette_cursor
-            .min(suggestions.len().saturating_sub(1));
-        let suggestion = suggestions[index];
-        self.state
-            .ui
-            .input
-            .set_buffer(suggestion.completion.to_string());
-        if !suggestion.accepts_arguments() {
-            self.state.ui.command_palette_cursor = index;
-        } else {
-            self.state.ui.command_palette_cursor = 0;
-        }
+            .min(intents.len().saturating_sub(1));
+        let completion = intents[index].cmd.clone();
+        self.state.ui.input.set_buffer(completion);
+        self.state.ui.command_palette_cursor = 0;
     }
 
     fn recall_history(&mut self, previous: bool) {
