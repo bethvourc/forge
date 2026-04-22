@@ -13,8 +13,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState, _focused: boo
         .timeline
         .entries
         .iter()
-        .rev()
-        .next()
+        .next_back()
         .map(|e| truncate_end(&e.message, 60))
         .unwrap_or_else(|| "quiet — waiting on you".to_string());
     let count = state.timeline.entries.len();

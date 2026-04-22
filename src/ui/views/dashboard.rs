@@ -598,10 +598,7 @@ fn render_tabs(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         } else {
             theme::muted()
         };
-        spans.push(Span::styled(
-            format!("{}", tab.title().to_ascii_lowercase()),
-            name_style,
-        ));
+        spans.push(Span::styled(tab.title().to_ascii_lowercase(), name_style));
         let count = match tab {
             DashboardTab::Services => state.services.registry.len(),
             DashboardTab::Processes => state.processes.snapshots.len(),

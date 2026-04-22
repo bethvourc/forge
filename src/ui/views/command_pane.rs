@@ -263,30 +263,15 @@ fn render_running_strip(frame: &mut Frame<'_>, area: Rect, items: &[RunItem]) {
         heading,
     );
 
-    // One bordered row per running item.
-    let mut y = area.y + 2;
-    for it in items {
-        if y >= area.y + area.height {
-            break;
-        }
+    // One row per running item.
+    let end_y = area.y.saturating_add(area.height);
+    for (y, it) in (area.y.saturating_add(2)..end_y).zip(items.iter()) {
         let row = Rect {
             x: area.x,
             y,
             width: area.width,
             height: 1,
         };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(theme::pane_border(false))
-            .style(theme::panel_surface(false));
-        // Draw a 3-cell tall framed row by overlaying inner text.
-        let framed = Rect {
-            x: area.x,
-            y,
-            width: area.width,
-            height: 1,
-        };
-        let _ = (block, framed);
         let meta = format!(
             "pid {} · {} · {}",
             it.pid.as_deref().unwrap_or("—"),
@@ -301,7 +286,6 @@ fn render_running_strip(frame: &mut Frame<'_>, area: Rect, items: &[RunItem]) {
             Span::styled("   logs ↗", theme::subtle()),
         ];
         frame.render_widget(Paragraph::new(Line::from(spans)), row);
-        y += 1;
     }
 }
 
@@ -551,14 +535,11 @@ fn render_context_card(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     lines.extend(body);
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 
-    // Hint line below the card (only when there is vertical room).
+    // Hint line stays inside the reserved card area so rendering never spills into adjacent panes.
     if let Some(hint) = footer_hint {
-        if area.y + area.height + 1 < area.y + area.height {
-            return;
-        }
         let hint_rect = Rect {
             x: area.x + 2,
-            y: area.y + area.height,
+            y: area.y.saturating_add(area.height.saturating_sub(2)),
             width: area.width.saturating_sub(2),
             height: 1,
         };
