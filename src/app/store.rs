@@ -2,13 +2,13 @@ use std::collections::BTreeMap;
 
 use crate::ai;
 use crate::app::{AppAction, AppEvent, Effect, UiIntent};
-use crate::commands::{parse_input, ParsedInput};
+use crate::commands::{parse_input, parse_shell_input, slash_command_suggestions, ParsedInput};
 use crate::domain::{
-    AiMessage, AiMessageRole, AiRequest, AiRequestKind, AiStatus, AppState, ApprovalDecision,
-    ApprovalMode, ApprovalRequest, CommandRecord, CommandStatus, DashboardTab, DiagnosticLevel,
-    DiagnosticRecord, ExecutionMode, ExecutionRequest, FocusTarget, JobRecord, JobStatus,
-    ModalState, Notification, NotificationLevel, ProcessSnapshot, ProcessStatus, ServiceHealth,
-    ServiceRecord, ServiceSource, TimelineEntry, TimelineKind,
+    AiActionProposal, AiMessage, AiMessageRole, AiRequest, AiRequestKind, AiStatus, AppState,
+    ApprovalDecision, ApprovalMode, ApprovalRequest, CommandRecord, CommandStatus, DashboardTab,
+    DiagnosticLevel, DiagnosticRecord, ExecutionMode, ExecutionRequest, FocusTarget, InputMode,
+    JobRecord, JobStatus, ModalState, Notification, NotificationLevel, ProcessSnapshot,
+    ProcessStatus, ServiceHealth, ServiceRecord, ServiceSource, TimelineEntry, TimelineKind,
 };
 use crate::safety::{approval_message, approval_mode_for, classify_command};
 use crate::shared::ids::{ApprovalId, CommandId, IdGenerator};
@@ -77,6 +77,7 @@ impl AppStore {
             AppEvent::AiCompleted(response) => {
                 let request_id = response.request_id;
                 let summary = truncate_for_timeline(&response.summary, 96);
+                let proposal_count = response.proposals.len();
                 let history_limit = self.state.config.ai.history_limit;
                 self.state.ai.status = AiStatus::Completed;
                 self.state.ai.active_request = None;
@@ -92,11 +93,24 @@ impl AppStore {
                 );
                 self.append_timeline(
                     TimelineKind::Ai,
-                    format!("AI response ready for request #{request_id}: {summary}"),
+                    format!(
+                        "AI response ready for request #{request_id}: {summary}{}",
+                        if proposal_count > 0 {
+                            format!(" ({proposal_count} proposal(s))")
+                        } else {
+                            String::new()
+                        }
+                    ),
                 );
                 self.push_notification(
                     NotificationLevel::Info,
-                    format!("AI response ready for request #{request_id}"),
+                    if proposal_count > 0 {
+                        format!(
+                            "AI response ready for request #{request_id} with {proposal_count} proposal(s)"
+                        )
+                    } else {
+                        format!("AI response ready for request #{request_id}")
+                    },
                 );
             }
             AppEvent::AiFailed {
@@ -336,13 +350,23 @@ impl AppStore {
                         _ => return Vec::new(),
                     }
                 } else if matches!(self.state.ui.focus, FocusTarget::CommandPane) {
-                    self.state.ui.input_buffer.push(c);
+                    self.state.ui.input.insert_char(c);
+                    self.sync_command_palette_cursor();
                 } else if self.state.ui.modal.is_some() {
                     return Vec::new();
                 }
             }
             UiIntent::Backspace => {
-                self.state.ui.input_buffer.pop();
+                self.state.ui.input.backspace();
+                self.sync_command_palette_cursor();
+            }
+            UiIntent::InsertNewline => {
+                if matches!(self.state.ui.focus, FocusTarget::CommandPane)
+                    && self.state.ui.modal.is_none()
+                {
+                    self.state.ui.input.insert_newline();
+                    self.sync_command_palette_cursor();
+                }
             }
             UiIntent::Submit => {
                 if let Some(modal) = self.state.ui.modal.as_ref() {
@@ -357,15 +381,26 @@ impl AppStore {
                     };
                 }
 
-                if self.state.ui.input_buffer.trim().is_empty() {
+                if self.state.ui.input.is_empty_trimmed() {
                     if let Some(approval_id) = self.current_inline_approval_id() {
                         return self.dispatch_action(AppAction::Approve(approval_id));
                     }
                     return Vec::new();
                 }
 
-                let raw = std::mem::take(&mut self.state.ui.input_buffer);
-                match parse_input(&raw) {
+                let raw = self.state.ui.input.take_buffer();
+                self.state.ui.command_palette_cursor = 0;
+                let parsed = if raw.trim_start().starts_with('/') {
+                    parse_input(&raw)
+                } else if let Some(kind) = self.state.ui.input.mode.ai_kind() {
+                    Ok(ParsedInput::AiPrompt {
+                        prompt: raw.trim().to_string(),
+                        kind,
+                    })
+                } else {
+                    parse_input(&raw)
+                };
+                match parsed {
                     Ok(parsed) => return self.dispatch_action(AppAction::ParsedInput(parsed)),
                     Err(message) => {
                         self.push_notification(NotificationLevel::Warn, message.clone());
@@ -374,7 +409,59 @@ impl AppStore {
                 }
             }
             UiIntent::ClearInput => {
-                self.state.ui.input_buffer.clear();
+                self.state.ui.input.clear();
+                self.state.ui.command_palette_cursor = 0;
+            }
+            UiIntent::MoveCursorLeft => {
+                self.state.ui.input.move_left();
+                self.sync_command_palette_cursor();
+            }
+            UiIntent::MoveCursorRight => {
+                self.state.ui.input.move_right();
+                self.sync_command_palette_cursor();
+            }
+            UiIntent::MoveCursorUp => {
+                self.state.ui.input.move_up();
+                self.sync_command_palette_cursor();
+            }
+            UiIntent::MoveCursorDown => {
+                self.state.ui.input.move_down();
+                self.sync_command_palette_cursor();
+            }
+            UiIntent::MoveCursorHome => {
+                self.state.ui.input.move_home();
+                self.sync_command_palette_cursor();
+            }
+            UiIntent::MoveCursorEnd => {
+                self.state.ui.input.move_end();
+                self.sync_command_palette_cursor();
+            }
+            UiIntent::RecallPreviousHistory => {
+                self.recall_history(true);
+                self.sync_command_palette_cursor();
+            }
+            UiIntent::RecallNextHistory => {
+                self.recall_history(false);
+                self.sync_command_palette_cursor();
+            }
+            UiIntent::CycleInputMode => {
+                self.state.ui.input.cycle_mode();
+                self.push_notification(
+                    NotificationLevel::Info,
+                    format!(
+                        "input mode: {}",
+                        self.state.ui.input.mode.label().to_ascii_lowercase()
+                    ),
+                );
+            }
+            UiIntent::PrevCommandSuggestion => {
+                self.move_command_palette_cursor(false);
+            }
+            UiIntent::NextCommandSuggestion => {
+                self.move_command_palette_cursor(true);
+            }
+            UiIntent::AcceptCommandSuggestion => {
+                self.accept_command_suggestion();
             }
             UiIntent::NextFocus => {
                 if self.state.ui.modal.is_some() {
@@ -446,7 +533,8 @@ impl AppStore {
                         None => Vec::new(),
                     };
                 }
-                self.state.ui.input_buffer.clear();
+                self.state.ui.input.clear();
+                self.state.ui.command_palette_cursor = 0;
             }
         }
         Vec::new()
@@ -461,7 +549,7 @@ impl AppStore {
             } => self.prepare_execution(command, background, provenance),
             ParsedInput::Quit => self.dispatch_action(AppAction::Ui(UiIntent::Quit)),
             ParsedInput::Clear => {
-                self.state.ui.input_buffer.clear();
+                self.state.ui.input.clear();
                 self.state.logs.recent.clear();
                 self.state.logs.per_source.clear();
                 self.append_timeline(
@@ -508,6 +596,143 @@ impl AppStore {
                 Vec::new()
             }
             ParsedInput::AiPrompt { prompt, kind } => self.prepare_ai_request(prompt, kind),
+            ParsedInput::ApplyAiProposal(index) => self.apply_ai_proposal(index),
+        }
+    }
+
+    fn active_suggestion_len(&self) -> usize {
+        let slash = slash_command_suggestions(&self.state.ui.input.buffer).len();
+        if slash > 0 {
+            return slash;
+        }
+        crate::ui::views::intent_suggestions(&self.state).len()
+    }
+
+    fn sync_command_palette_cursor(&mut self) {
+        let len = self.active_suggestion_len();
+        if len == 0 {
+            self.state.ui.command_palette_cursor = 0;
+            return;
+        }
+
+        if self.state.ui.command_palette_cursor >= len {
+            self.state.ui.command_palette_cursor = len.saturating_sub(1);
+        }
+    }
+
+    fn move_command_palette_cursor(&mut self, forward: bool) {
+        let len = self.active_suggestion_len();
+        if len == 0 {
+            self.state.ui.command_palette_cursor = 0;
+            return;
+        }
+        let current = self
+            .state
+            .ui
+            .command_palette_cursor
+            .min(len.saturating_sub(1));
+        self.state.ui.command_palette_cursor = if forward {
+            (current + 1) % len
+        } else if current == 0 {
+            len - 1
+        } else {
+            current - 1
+        };
+    }
+
+    fn accept_command_suggestion(&mut self) {
+        let slash = slash_command_suggestions(&self.state.ui.input.buffer);
+        if !slash.is_empty() {
+            let index = self
+                .state
+                .ui
+                .command_palette_cursor
+                .min(slash.len().saturating_sub(1));
+            let suggestion = slash[index];
+            self.state
+                .ui
+                .input
+                .set_buffer(suggestion.completion.to_string());
+            if !suggestion.accepts_arguments() {
+                self.state.ui.command_palette_cursor = index;
+            } else {
+                self.state.ui.command_palette_cursor = 0;
+            }
+            return;
+        }
+
+        let intents = crate::ui::views::intent_suggestions(&self.state);
+        if intents.is_empty() {
+            return;
+        }
+        let index = self
+            .state
+            .ui
+            .command_palette_cursor
+            .min(intents.len().saturating_sub(1));
+        let completion = intents[index].cmd.clone();
+        self.state.ui.input.set_buffer(completion);
+        self.state.ui.command_palette_cursor = 0;
+    }
+
+    fn recall_history(&mut self, previous: bool) {
+        let entries = self.history_entries_for_mode();
+        if entries.is_empty() {
+            return;
+        }
+
+        let editor = &mut self.state.ui.input;
+        if previous {
+            let next_index = match editor.history_cursor {
+                Some(index) if index > 0 => index - 1,
+                Some(index) => index,
+                None => {
+                    editor.history_draft = Some(editor.buffer.clone());
+                    entries.len().saturating_sub(1)
+                }
+            };
+            editor.history_cursor = Some(next_index);
+            editor.set_buffer(entries[next_index].clone());
+            editor.history_cursor = Some(next_index);
+            return;
+        }
+
+        let Some(current_index) = editor.history_cursor else {
+            return;
+        };
+
+        if current_index + 1 < entries.len() {
+            let next_index = current_index + 1;
+            editor.history_cursor = Some(next_index);
+            editor.set_buffer(entries[next_index].clone());
+            editor.history_cursor = Some(next_index);
+            return;
+        }
+
+        let draft = editor.history_draft.take().unwrap_or_default();
+        editor.set_buffer(draft);
+        editor.history_cursor = None;
+    }
+
+    fn history_entries_for_mode(&self) -> Vec<String> {
+        match self.state.ui.input.mode {
+            InputMode::Shell => self.state.commands.history.clone(),
+            InputMode::AiAssist => self
+                .state
+                .ai
+                .requests
+                .iter()
+                .filter(|request| matches!(request.kind, AiRequestKind::Assist))
+                .map(|request| request.prompt.clone())
+                .collect(),
+            InputMode::AiDiagnose => self
+                .state
+                .ai
+                .requests
+                .iter()
+                .filter(|request| matches!(request.kind, AiRequestKind::Diagnose))
+                .map(|request| request.prompt.clone())
+                .collect(),
         }
     }
 
@@ -566,6 +791,16 @@ impl AppStore {
         background: bool,
         provenance: crate::domain::CommandProvenance,
     ) -> Vec<Effect> {
+        self.prepare_execution_internal(raw, background, provenance, None)
+    }
+
+    fn prepare_execution_internal(
+        &mut self,
+        raw: String,
+        background: bool,
+        provenance: crate::domain::CommandProvenance,
+        proposal_context: Option<(usize, &AiActionProposal)>,
+    ) -> Vec<Effect> {
         let safety_class = classify_command(&raw);
         let command_id = self.ids.next_command();
         let job_id = self.ids.next_job();
@@ -620,15 +855,7 @@ impl AppStore {
                 class: safety_class,
                 mode,
                 summary: raw.clone(),
-                detail: format!(
-                    "{} action classified as {}",
-                    if background {
-                        "background"
-                    } else {
-                        "foreground"
-                    },
-                    safety_class.label()
-                ),
+                detail: approval_detail(background, safety_class, proposal_context),
                 execution: request,
             };
             self.append_timeline(TimelineKind::Approval, approval_message(&approval));
@@ -648,6 +875,95 @@ impl AppStore {
             ),
         );
         vec![Effect::ExecuteCommand(request)]
+    }
+
+    fn apply_ai_proposal(&mut self, proposal_index: usize) -> Vec<Effect> {
+        let Some(response) = self.state.ai.last_response.clone() else {
+            self.push_notification(
+                NotificationLevel::Warn,
+                "no AI proposals are available yet".to_string(),
+            );
+            self.append_timeline(
+                TimelineKind::Ai,
+                "attempted to apply an AI proposal before any response was available".to_string(),
+            );
+            return Vec::new();
+        };
+
+        let Some(proposal) = response
+            .proposals
+            .get(proposal_index.saturating_sub(1))
+            .cloned()
+        else {
+            self.push_notification(
+                NotificationLevel::Warn,
+                format!("AI proposal #{proposal_index} does not exist"),
+            );
+            self.append_timeline(
+                TimelineKind::Ai,
+                format!(
+                    "attempted to apply missing AI proposal #{proposal_index} from request #{}",
+                    response.request_id
+                ),
+            );
+            return Vec::new();
+        };
+
+        let Some(command) = proposal
+            .command
+            .as_deref()
+            .map(str::trim)
+            .filter(|command| !command.is_empty())
+        else {
+            self.push_notification(
+                NotificationLevel::Warn,
+                format!("AI proposal #{proposal_index} has no executable command"),
+            );
+            self.append_timeline(
+                TimelineKind::Ai,
+                format!(
+                    "AI proposal #{proposal_index} is advisory only: {}",
+                    truncate_for_timeline(&proposal.summary, 96)
+                ),
+            );
+            return Vec::new();
+        };
+
+        let parsed =
+            match parse_shell_input(command, crate::domain::CommandProvenance::AiSuggestion) {
+                Ok(parsed) => parsed,
+                Err(message) => {
+                    self.push_notification(NotificationLevel::Warn, message.clone());
+                    self.append_timeline(TimelineKind::Error, message);
+                    return Vec::new();
+                }
+            };
+
+        self.append_timeline(
+            TimelineKind::Ai,
+            format!(
+                "selected AI proposal #{proposal_index}: {}",
+                truncate_for_timeline(&proposal.summary, 96)
+            ),
+        );
+        self.push_notification(
+            NotificationLevel::Info,
+            format!("selected AI proposal #{proposal_index}"),
+        );
+
+        match parsed {
+            ParsedInput::Execute {
+                command,
+                background,
+                provenance,
+            } => self.prepare_execution_internal(
+                command,
+                background,
+                provenance,
+                Some((proposal_index, &proposal)),
+            ),
+            _ => Vec::new(),
+        }
     }
 
     fn resolve_approval(&mut self, approval_id: ApprovalId, approved: bool) -> Vec<Effect> {
@@ -849,4 +1165,30 @@ fn truncate_for_timeline(message: &str, max_len: usize) -> String {
         return trimmed.to_string();
     }
     format!("{}...", &trimmed[..max_len.saturating_sub(3)])
+}
+
+fn approval_detail(
+    background: bool,
+    safety_class: crate::domain::SafetyClass,
+    proposal_context: Option<(usize, &AiActionProposal)>,
+) -> String {
+    if let Some((proposal_index, proposal)) = proposal_context {
+        return format!(
+            "AI proposal #{proposal_index}: {}. {} Runtime classification: {} (model hint: {}).",
+            proposal.summary,
+            proposal.detail,
+            safety_class.label(),
+            proposal.safety_class.label()
+        );
+    }
+
+    format!(
+        "{} action classified as {}",
+        if background {
+            "background"
+        } else {
+            "foreground"
+        },
+        safety_class.label()
+    )
 }

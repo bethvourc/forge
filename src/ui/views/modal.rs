@@ -4,7 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::domain::{AppState, ModalState};
+use crate::domain::{AppState, CommandProvenance, ModalState};
 use crate::ui::theme;
 
 pub fn render(frame: &mut Frame<'_>, state: &AppState) {
@@ -34,10 +34,32 @@ pub fn render(frame: &mut Frame<'_>, state: &AppState) {
                         .add_modifier(Modifier::BOLD),
                 )),
                 Line::raw(""),
-                Line::from(format!(
-                    "Command #{}: {}",
-                    approval.command_id, approval.summary
-                )),
+                Line::from(vec![
+                    Span::styled(
+                        format!("Command #{} ", approval.command_id),
+                        theme::accent(),
+                    ),
+                    Span::styled(
+                        format!("[{}] ", approval.class.label()),
+                        theme::status_badge(theme::WARN),
+                    ),
+                    Span::styled(
+                        format!("[{}] ", provenance_label(approval.execution.provenance)),
+                        theme::status_badge(theme::INFO),
+                    ),
+                    Span::styled(approval.summary.clone(), theme::primary()),
+                ]),
+                Line::from(vec![
+                    Span::styled("cwd ", theme::subtle()),
+                    Span::styled(
+                        approval.execution.cwd.display().to_string(),
+                        theme::primary(),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled("command ", theme::subtle()),
+                    Span::styled(approval.execution.raw.clone(), theme::primary()),
+                ]),
                 Line::from(approval.detail.clone()),
                 Line::raw(""),
                 Line::from("Press Enter or y to approve."),
@@ -52,7 +74,8 @@ pub fn render(frame: &mut Frame<'_>, state: &AppState) {
                         Block::default()
                             .title("Approval Required")
                             .borders(Borders::ALL)
-                            .border_style(theme::pane_border(true)),
+                            .border_style(theme::pane_border(true))
+                            .style(theme::panel_surface(true)),
                     ),
                 area,
             );
@@ -69,16 +92,23 @@ pub fn render(frame: &mut Frame<'_>, state: &AppState) {
                 Line::from("/help              open this help"),
                 Line::from("/ai <prompt>       queue an AI assistance request"),
                 Line::from("/diagnose <prompt> queue an AI diagnosis request"),
+                Line::from("/apply <n>         run AI proposal n through safety checks"),
                 Line::from("/bg <cmd>          run a background command"),
                 Line::from("/cancel <id>       cancel a running command"),
                 Line::from("/approve           approve the current pending action"),
                 Line::from("/deny              deny the current pending action"),
                 Line::from("/tab next          next dashboard tab"),
                 Line::from("/tab prev          previous dashboard tab"),
+                Line::from("/clear             clear input and visible logs"),
                 Line::from("/quit              exit Forge"),
                 Line::raw(""),
                 Line::from("Keyboard"),
                 Line::from("Tab                cycle pane focus"),
+                Line::from("Tab (with /)       insert selected slash command"),
+                Line::from("Up/Down (with /)   move through slash suggestions"),
+                Line::from("F2                 cycle shell / AI assist / AI diagnose"),
+                Line::from("Ctrl+P / Ctrl+N    previous / next history for the current mode"),
+                Line::from("Ctrl+J             insert a newline in the console editor"),
                 Line::from("Left/Right         switch dashboard tabs when dashboard is focused"),
                 Line::from("Enter              run input or confirm modal"),
                 Line::from("Esc                close modal / deny approval"),
@@ -93,7 +123,8 @@ pub fn render(frame: &mut Frame<'_>, state: &AppState) {
                         Block::default()
                             .title("Help")
                             .borders(Borders::ALL)
-                            .border_style(theme::pane_border(true)),
+                            .border_style(theme::pane_border(true))
+                            .style(theme::panel_surface(true)),
                     ),
                 area,
             );
@@ -107,11 +138,21 @@ pub fn render(frame: &mut Frame<'_>, state: &AppState) {
                         Block::default()
                             .title("Error")
                             .borders(Borders::ALL)
-                            .border_style(Style::default().fg(theme::ERROR)),
+                            .border_style(Style::default().fg(theme::ERROR))
+                            .style(theme::panel_surface(true)),
                     ),
                 area,
             );
         }
+    }
+}
+
+fn provenance_label(provenance: CommandProvenance) -> &'static str {
+    match provenance {
+        CommandProvenance::UserInput => "user",
+        CommandProvenance::SlashCommand => "slash",
+        CommandProvenance::ApprovalEscalation => "approval",
+        CommandProvenance::AiSuggestion => "ai",
     }
 }
 

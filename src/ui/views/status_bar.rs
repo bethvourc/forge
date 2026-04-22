@@ -1,12 +1,14 @@
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
 use crate::domain::AppState;
 use crate::ui::theme;
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    frame.render_widget(Block::default().style(theme::chrome_surface()), area);
+
     let branch = state
         .git
         .branch
@@ -18,95 +20,110 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         .clone()
         .unwrap_or_else(|| "------".to_string());
     let dirty = if state.git.is_dirty { "dirty" } else { "clean" };
-    let mode = if state.ui.modal.is_some() {
-        "approval"
-    } else if !state.approvals.pending.is_empty() {
-        "review"
-    } else {
-        "normal"
-    };
-    let focus = match state.ui.focus {
-        crate::domain::FocusTarget::CommandPane => "command",
-        crate::domain::FocusTarget::DashboardPane => "dashboard",
-        crate::domain::FocusTarget::EventStream => "events",
-        crate::domain::FocusTarget::Modal => "modal",
-    };
-    let (ai_label, ai_color) = match state.ai.status {
-        crate::domain::AiStatus::Disabled => ("OFF", theme::TEXT_SUBTLE),
-        crate::domain::AiStatus::Unconfigured => ("SETUP", theme::WARN),
-        crate::domain::AiStatus::Ready => ("READY", theme::SUCCESS),
-        crate::domain::AiStatus::Queued => ("QUEUED", theme::INFO),
-        crate::domain::AiStatus::Running => ("RUN", theme::INFO),
-        crate::domain::AiStatus::Completed => ("DONE", theme::SUCCESS),
-        crate::domain::AiStatus::Failed => ("ERROR", theme::ERROR),
-    };
-    let pending_count = state.approvals.pending.len().to_string();
 
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .split(area);
+    let project = truncate_end(&state.project.name, 18);
+
+    let running = state
+        .services
+        .registry
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.health,
+                crate::domain::ServiceHealth::Healthy
+                    | crate::domain::ServiceHealth::Starting
+                    | crate::domain::ServiceHealth::Degraded
+            )
+        })
+        .count();
+
+    let branch_display = truncate_middle(&branch_leaf(&branch), 28);
+    let left = if project.eq_ignore_ascii_case("forge") {
+        vec![
+            Span::raw("  "),
+            Span::styled("forge", theme::italic_serif()),
+            Span::styled("   /   ", theme::subtle()),
+            Span::styled(branch_display, theme::status_context()),
+        ]
+    } else {
+        vec![
+            Span::raw("  "),
+            Span::styled("forge", theme::italic_serif()),
+            Span::styled("   /   ", theme::subtle()),
+            Span::styled(project, theme::status_context()),
+            Span::styled("   /   ", theme::subtle()),
+            Span::styled(branch_display, theme::status_context()),
+        ]
+    };
+
+    let mut right: Vec<Span<'static>> = Vec::new();
+    if running > 0 {
+        right.push(Span::styled("●", theme::accent()));
+        right.push(Span::raw(" "));
+        right.push(Span::styled(format!("{running} running"), theme::primary()));
+        right.push(Span::styled("  ·  ", theme::subtle()));
+    }
+    right.push(Span::styled(
+        dirty,
+        if state.git.is_dirty {
+            theme::warn_accent()
+        } else {
+            theme::muted()
+        },
+    ));
+    right.push(Span::styled("  ·  ", theme::subtle()));
+    right.push(Span::styled(truncate_end(&head, 8), theme::subtle()));
+    right.push(Span::raw("  "));
+
+    let text_y = if area.height >= 3 { area.y + 1 } else { area.y };
+    let text_area = Rect {
+        x: area.x,
+        y: text_y,
+        width: area.width,
+        height: 1,
+    };
+
+    // Two paragraphs: left-aligned + right-aligned, matching the sparse wireframe bar.
+    let mid = text_area.width / 2;
+    let left_area = Rect {
+        x: text_area.x,
+        y: text_area.y,
+        width: mid,
+        height: 1,
+    };
+    let right_area = Rect {
+        x: text_area.x + mid,
+        y: text_area.y,
+        width: text_area.width.saturating_sub(mid),
+        height: 1,
+    };
 
     frame.render_widget(
-        Block::default()
-            .borders(Borders::BOTTOM)
-            .border_style(theme::pane_border(false)),
-        area,
+        Paragraph::new(Line::from(left)).style(theme::chrome_surface()),
+        left_area,
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(right))
+            .alignment(ratatui::layout::Alignment::Right)
+            .style(theme::chrome_surface()),
+        right_area,
     );
 
-    let row1 = Line::from(vec![
-        Span::styled(" Forge ", theme::status_badge(theme::ACCENT)),
-        Span::raw(" "),
-        badge(
-            "GIT",
-            dirty,
-            if state.git.is_dirty {
-                theme::WARN
-            } else {
-                theme::SUCCESS
-            },
-        ),
-        Span::raw(" "),
-        badge("MODE", mode, theme::INFO),
-        Span::raw(" "),
-        badge("FOCUS", focus, theme::ACCENT),
-        Span::raw(" "),
-        badge("AI", ai_label, ai_color),
-        Span::raw(" "),
-        badge(
-            "PENDING",
-            &pending_count,
-            if state.approvals.pending.is_empty() {
-                theme::TEXT_SUBTLE
-            } else {
-                theme::WARN
-            },
-        ),
-    ]);
-    frame.render_widget(Paragraph::new(row1), rows[0]);
-
-    let row2 = Line::from(vec![
-        Span::styled("repo ", theme::muted()),
-        Span::styled(truncate_end(&state.project.name, 24), theme::primary()),
-        Span::raw("  "),
-        Span::styled("branch ", theme::muted()),
-        Span::styled(truncate_middle(&branch, 32), theme::primary()),
-        Span::raw("  "),
-        Span::styled("head ", theme::muted()),
-        Span::styled(head, theme::primary()),
-    ]);
-    frame.render_widget(Paragraph::new(row2), rows[1]);
-
-    let row3 = contextual_hint_line(state);
-    frame.render_widget(Paragraph::new(row3), rows[2]);
-}
-
-fn badge<'a>(label: &'a str, value: &'a str, bg: ratatui::style::Color) -> Span<'a> {
-    Span::styled(format!(" {label}:{value} "), theme::status_badge(bg))
+    if area.height > 1 {
+        let separator = Rect {
+            x: area.x,
+            y: area.y + area.height - 1,
+            width: area.width,
+            height: 1,
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "─".repeat(area.width as usize),
+                theme::separator(),
+            ))),
+            separator,
+        );
+    }
 }
 
 fn truncate_end(value: &str, max_chars: usize) -> String {
@@ -138,59 +155,11 @@ fn truncate_middle(value: &str, max_chars: usize) -> String {
     format!("{start}…{end}")
 }
 
-fn contextual_hint_line(state: &AppState) -> Line<'static> {
-    match state.ui.modal.as_ref() {
-        Some(crate::domain::ModalState::Approval(_)) => Line::from(vec![
-            Span::styled("Enter", theme::accent()),
-            Span::styled(" approve", theme::muted()),
-            Span::raw("  "),
-            Span::styled("Esc", theme::accent()),
-            Span::styled(" deny", theme::muted()),
-            Span::raw("  "),
-            Span::styled("/help", theme::accent()),
-            Span::styled(" commands", theme::muted()),
-        ]),
-        Some(crate::domain::ModalState::Help) | Some(crate::domain::ModalState::Error(_)) => {
-            Line::from(vec![
-                Span::styled("Esc", theme::accent()),
-                Span::styled(" close", theme::muted()),
-                Span::raw("  "),
-                Span::styled("Enter", theme::accent()),
-                Span::styled(" dismiss", theme::muted()),
-            ])
-        }
-        None => match state.ui.focus {
-            crate::domain::FocusTarget::CommandPane => Line::from(vec![
-                Span::styled("Enter", theme::accent()),
-                Span::styled(" run", theme::muted()),
-                Span::raw("  "),
-                Span::styled("Tab", theme::accent()),
-                Span::styled(" next pane", theme::muted()),
-                Span::raw("  "),
-                Span::styled("/help", theme::accent()),
-                Span::styled(" commands", theme::muted()),
-            ]),
-            crate::domain::FocusTarget::DashboardPane => Line::from(vec![
-                Span::styled("Left/Right", theme::accent()),
-                Span::styled(" switch tabs", theme::muted()),
-                Span::raw("  "),
-                Span::styled("Tab", theme::accent()),
-                Span::styled(" next pane", theme::muted()),
-                Span::raw("  "),
-                Span::styled("F1", theme::accent()),
-                Span::styled(" help", theme::muted()),
-            ]),
-            crate::domain::FocusTarget::EventStream => Line::from(vec![
-                Span::styled("Tab", theme::accent()),
-                Span::styled(" next pane", theme::muted()),
-                Span::raw("  "),
-                Span::styled("F1", theme::accent()),
-                Span::styled(" help", theme::muted()),
-            ]),
-            crate::domain::FocusTarget::Modal => Line::from(vec![
-                Span::styled("Esc", theme::accent()),
-                Span::styled(" close", theme::muted()),
-            ]),
-        },
-    }
+fn branch_leaf(branch: &str) -> String {
+    branch
+        .rsplit('/')
+        .next()
+        .filter(|value| !value.is_empty())
+        .unwrap_or(branch)
+        .to_string()
 }

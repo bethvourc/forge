@@ -1,5 +1,6 @@
+pub mod keys;
 pub mod terminal;
 pub mod theme;
-mod views;
+pub mod views;
 
 pub use views::render;

@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 
 use crate::ai::provider::{AiFuture, AiProvider};
 use crate::config::AiConfig;
-use crate::domain::{AiCitation, AiRequest, AiResponse};
+use crate::domain::{AiActionProposal, AiCitation, AiRequest, AiResponse, SafetyClass};
 use crate::shared::error::AiError;
 use crate::shared::time::now_utc;
 
@@ -121,7 +121,16 @@ impl AiProvider for OpenAiProvider {
                 summary: structured.summary,
                 message: structured.message,
                 recommendations: structured.recommendations,
-                proposals: Vec::new(),
+                proposals: structured
+                    .proposals
+                    .into_iter()
+                    .map(|proposal| AiActionProposal {
+                        summary: proposal.summary,
+                        detail: proposal.detail,
+                        command: (!proposal.command.trim().is_empty()).then_some(proposal.command),
+                        safety_class: proposal.safety_class,
+                    })
+                    .collect(),
                 citations: structured
                     .citations
                     .into_iter()
@@ -172,6 +181,10 @@ fn build_developer_prompt(request: &AiRequest) -> String {
             "Use the provided repository/runtime context. Be concrete, grounded, and concise.\n",
             "Do not claim certainty when evidence is weak.\n",
             "Do not propose hidden actions.\n",
+            "Only include action proposals when they are directly grounded in the supplied context.\n",
+            "Each proposal must be a single inspectable command. If no grounded action is appropriate, return an empty proposals array.\n",
+            "The proposal safety_class is a best-effort hint using one of: Passive, Safe, Caution, Risky, Destructive.\n",
+            "Return at most 3 proposals.\n",
             "Return JSON matching the requested schema.\n\n",
             "Request kind: {}\n",
             "UI focus: {}\n",
@@ -285,7 +298,7 @@ fn response_schema() -> Value {
     json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["summary", "message", "recommendations", "citations"],
+        "required": ["summary", "message", "recommendations", "proposals", "citations"],
         "properties": {
             "summary": {
                 "type": "string",
@@ -299,6 +312,27 @@ fn response_schema() -> Value {
                 "type": "array",
                 "items": { "type": "string" },
                 "description": "Concrete next steps or checks."
+            },
+            "proposals": {
+                "type": "array",
+                "description": "Optional grounded actions. Use an empty array when no direct action should be suggested.",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["summary", "detail", "command", "safety_class"],
+                    "properties": {
+                        "summary": { "type": "string" },
+                        "detail": { "type": "string" },
+                        "command": {
+                            "type": "string",
+                            "description": "A single shell command to run. Do not include explanations here."
+                        },
+                        "safety_class": {
+                            "type": "string",
+                            "enum": ["Passive", "Safe", "Caution", "Risky", "Destructive"]
+                        }
+                    }
+                }
             },
             "citations": {
                 "type": "array",
@@ -387,6 +421,7 @@ struct StructuredAiResponse {
     summary: String,
     message: String,
     recommendations: Vec<String>,
+    proposals: Vec<StructuredProposal>,
     citations: Vec<StructuredCitation>,
 }
 
@@ -394,6 +429,14 @@ struct StructuredAiResponse {
 struct StructuredCitation {
     label: String,
     detail: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StructuredProposal {
+    summary: String,
+    detail: String,
+    command: String,
+    safety_class: SafetyClass,
 }
 
 #[cfg(test)]
@@ -413,7 +456,7 @@ mod tests {
             "output": [
                 {
                     "content": [
-                        { "type": "output_text", "text": "{\"summary\":\"s\",\"message\":\"m\",\"recommendations\":[],\"citations\":[]}" }
+                        { "type": "output_text", "text": "{\"summary\":\"s\",\"message\":\"m\",\"recommendations\":[],\"proposals\":[],\"citations\":[]}" }
                     ]
                 }
             ]
@@ -443,5 +486,34 @@ mod tests {
         let payload = build_payload(&request, "gpt-5-mini");
         assert_eq!(payload["text"]["format"]["type"], "json_schema");
         assert_eq!(payload["model"], "gpt-5-mini");
+        assert!(payload["text"]["format"]["schema"]["required"]
+            .as_array()
+            .expect("schema required array should exist")
+            .iter()
+            .any(|value| value == "proposals"));
+    }
+
+    #[test]
+    fn structured_response_parses_proposals() {
+        let parsed: StructuredAiResponse = serde_json::from_value(json!({
+            "summary": "Forge found a likely next step",
+            "message": "The latest logs suggest rerunning the test suite.",
+            "recommendations": ["Inspect the newest stderr lines first."],
+            "proposals": [
+                {
+                    "summary": "Rerun the Rust test suite",
+                    "detail": "Verify the current failure state before changing code.",
+                    "command": "cargo test",
+                    "safety_class": "Caution"
+                }
+            ],
+            "citations": [
+                { "label": "timeline", "detail": "Recent command failure was captured in the event stream." }
+            ]
+        }))
+        .expect("structured response should deserialize");
+
+        assert_eq!(parsed.proposals.len(), 1);
+        assert_eq!(parsed.proposals[0].command, "cargo test");
     }
 }
