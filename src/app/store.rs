@@ -1,14 +1,15 @@
-use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use crate::ai;
 use crate::app::{AppAction, AppEvent, Effect, UiIntent};
 use crate::commands::{parse_input, parse_shell_input, slash_command_suggestions, ParsedInput};
 use crate::domain::{
     AiActionProposal, AiMessage, AiMessageRole, AiRequest, AiRequestKind, AiStatus, AppState,
-    ApprovalDecision, ApprovalMode, ApprovalRequest, CommandRecord, CommandStatus, DashboardTab,
-    DiagnosticLevel, DiagnosticRecord, ExecutionMode, ExecutionRequest, FocusTarget, InputMode,
-    JobRecord, JobStatus, ModalState, Notification, NotificationLevel, ProcessSnapshot,
-    ProcessStatus, ServiceHealth, ServiceRecord, ServiceSource, TimelineEntry, TimelineKind,
+    ApprovalDecision, ApprovalMode, ApprovalRequest, CommandHistoryEntry, CommandRecord,
+    CommandStatus, DashboardTab, DiagnosticLevel, DiagnosticRecord, ExecutionMode,
+    ExecutionRequest, FocusTarget, InputMode, JobRecord, JobStatus, ModalState, Notification,
+    NotificationLevel, ProcessSnapshot, ProcessStatus, ServiceHealth, ServiceRecord, ServiceSource,
+    TimelineEntry, TimelineKind,
 };
 use crate::safety::{approval_message, approval_mode_for, classify_command};
 use crate::shared::ids::{ApprovalId, CommandId, IdGenerator};
@@ -21,9 +22,10 @@ pub struct AppStore {
 
 impl AppStore {
     pub fn new(state: AppState) -> Self {
+        let next_id = next_id_after_restored_state(&state);
         Self {
             state,
-            ids: IdGenerator::new(),
+            ids: IdGenerator::starting_at(next_id),
         }
     }
 
@@ -139,13 +141,18 @@ impl AppStore {
                 service_id,
                 pid,
             } => {
+                let started_at = now_utc();
                 if let Some(command) = self.find_command_mut(command_id) {
                     command.status = CommandStatus::Running;
-                    command.started_at = Some(now_utc());
+                    command.started_at = Some(started_at);
                 }
+                self.update_history_for_command(command_id, |entry| {
+                    entry.status = CommandStatus::Running;
+                    entry.started_at = Some(started_at);
+                });
                 if let Some(job) = self.find_job_mut(job_id) {
                     job.status = JobStatus::Running;
-                    job.started_at = Some(now_utc());
+                    job.started_at = Some(started_at);
                     job.pid = pid;
                 }
                 let process = ProcessSnapshot {
@@ -233,6 +240,7 @@ impl AppStore {
                 exit_code,
             } => {
                 let succeeded = exit_code == 0;
+                let ended_at = now_utc();
                 if let Some(command) = self.find_command_mut(command_id) {
                     command.status = if succeeded {
                         CommandStatus::Succeeded
@@ -240,15 +248,25 @@ impl AppStore {
                         CommandStatus::Failed
                     };
                     command.exit_code = Some(exit_code);
-                    command.ended_at = Some(now_utc());
+                    command.ended_at = Some(ended_at);
                 }
+                self.update_history_for_command(command_id, |entry| {
+                    entry.status = if succeeded {
+                        CommandStatus::Succeeded
+                    } else {
+                        CommandStatus::Failed
+                    };
+                    entry.exit_code = Some(exit_code);
+                    entry.ended_at = Some(ended_at);
+                });
+                self.state.commands.session.last_exit_status = Some(exit_code);
                 if let Some(job) = self.find_job_mut(job_id) {
                     job.status = if succeeded {
                         JobStatus::Succeeded
                     } else {
                         JobStatus::Failed
                     };
-                    job.ended_at = Some(now_utc());
+                    job.ended_at = Some(ended_at);
                 }
                 if let Some(service_id) = service_id {
                     if let Some(service) = self.find_service_mut(service_id) {
@@ -285,13 +303,20 @@ impl AppStore {
                 job_id,
                 service_id,
             } => {
+                let ended_at = now_utc();
                 if let Some(command) = self.find_command_mut(command_id) {
                     command.status = CommandStatus::Cancelled;
-                    command.ended_at = Some(now_utc());
+                    command.ended_at = Some(ended_at);
                 }
+                self.update_history_for_command(command_id, |entry| {
+                    entry.status = CommandStatus::Cancelled;
+                    entry.exit_code = Some(130);
+                    entry.ended_at = Some(ended_at);
+                });
+                self.state.commands.session.last_exit_status = Some(130);
                 if let Some(job) = self.find_job_mut(job_id) {
                     job.status = JobStatus::Cancelled;
-                    job.ended_at = Some(now_utc());
+                    job.ended_at = Some(ended_at);
                 }
                 if let Some(service_id) = service_id {
                     if let Some(service) = self.find_service_mut(service_id) {
@@ -374,7 +399,7 @@ impl AppStore {
                         ModalState::Approval(_) => {
                             self.dispatch_action(AppAction::Ui(UiIntent::ApproveCurrent))
                         }
-                        ModalState::Help | ModalState::Error(_) => {
+                        ModalState::Help | ModalState::History | ModalState::Error(_) => {
                             self.close_modal();
                             Vec::new()
                         }
@@ -526,7 +551,9 @@ impl AppStore {
                         Some(ModalState::Approval(_)) => {
                             self.dispatch_action(AppAction::Ui(UiIntent::DenyCurrent))
                         }
-                        Some(ModalState::Help) | Some(ModalState::Error(_)) => {
+                        Some(ModalState::Help)
+                        | Some(ModalState::History)
+                        | Some(ModalState::Error(_)) => {
                             self.close_modal();
                             Vec::new()
                         }
@@ -547,6 +574,7 @@ impl AppStore {
                 background,
                 provenance,
             } => self.prepare_execution(command, background, provenance),
+            ParsedInput::ChangeDirectory { target } => self.change_directory(target),
             ParsedInput::Quit => self.dispatch_action(AppAction::Ui(UiIntent::Quit)),
             ParsedInput::Clear => {
                 self.state.ui.input.clear();
@@ -589,6 +617,14 @@ impl AppStore {
                 }
             }
             ParsedInput::Cancel(command_id) => self.dispatch_action(AppAction::Cancel(command_id)),
+            ParsedInput::History => {
+                self.state.ui.modal = Some(ModalState::History);
+                self.state.ui.focus = FocusTarget::Modal;
+                self.append_timeline(TimelineKind::System, "opened command history".to_string());
+                Vec::new()
+            }
+            ParsedInput::Rerun(command_id) => self.rerun_command(command_id),
+            ParsedInput::RerunLast => self.rerun_last_command(),
             ParsedInput::Help => {
                 self.state.ui.modal = Some(ModalState::Help);
                 self.state.ui.focus = FocusTarget::Modal;
@@ -716,7 +752,13 @@ impl AppStore {
 
     fn history_entries_for_mode(&self) -> Vec<String> {
         match self.state.ui.input.mode {
-            InputMode::Shell => self.state.commands.history.clone(),
+            InputMode::Shell => self
+                .state
+                .commands
+                .history
+                .iter()
+                .map(|entry| entry.raw.clone())
+                .collect(),
             InputMode::AiAssist => self
                 .state
                 .ai
@@ -734,6 +776,141 @@ impl AppStore {
                 .map(|request| request.prompt.clone())
                 .collect(),
         }
+    }
+
+    fn rerun_command(&mut self, command_id: CommandId) -> Vec<Effect> {
+        let entry = self
+            .state
+            .commands
+            .history
+            .iter()
+            .rev()
+            .find(|entry| entry.command_id == Some(command_id))
+            .cloned();
+
+        let Some(entry) = entry else {
+            self.push_notification(
+                NotificationLevel::Warn,
+                format!("no command history entry found for #{command_id}"),
+            );
+            self.append_timeline(
+                TimelineKind::Error,
+                format!("rerun requested for missing command #{command_id}"),
+            );
+            return Vec::new();
+        };
+
+        self.replay_history_entry(entry, format!("command #{command_id}"))
+    }
+
+    fn rerun_last_command(&mut self) -> Vec<Effect> {
+        let Some(entry) = self.state.commands.history.last().cloned() else {
+            self.push_notification(
+                NotificationLevel::Info,
+                "no shell history is available to rerun".to_string(),
+            );
+            return Vec::new();
+        };
+
+        self.replay_history_entry(entry, "latest history entry".to_string())
+    }
+
+    fn replay_history_entry(&mut self, entry: CommandHistoryEntry, source: String) -> Vec<Effect> {
+        self.append_timeline(
+            TimelineKind::Command,
+            format!(
+                "replaying {source}: {}",
+                truncate_for_timeline(&entry.raw, 96)
+            ),
+        );
+
+        let parsed = match parse_input(&entry.raw) {
+            Ok(parsed) => parsed,
+            Err(message) => {
+                self.push_notification(NotificationLevel::Warn, message.clone());
+                self.append_timeline(TimelineKind::Error, message);
+                return Vec::new();
+            }
+        };
+
+        match parsed {
+            ParsedInput::Execute { command, .. } => self.prepare_execution_internal(
+                command,
+                entry.background,
+                crate::domain::CommandProvenance::SlashCommand,
+                None,
+                Some(entry.cwd),
+                Some(entry.shell),
+            ),
+            ParsedInput::ChangeDirectory { target } => self.change_directory(target),
+            ParsedInput::Clear => self.handle_parsed_input(ParsedInput::Clear),
+            ParsedInput::Quit => {
+                self.push_notification(
+                    NotificationLevel::Warn,
+                    "refusing to replay a quit command".to_string(),
+                );
+                Vec::new()
+            }
+            _ => {
+                self.push_notification(
+                    NotificationLevel::Warn,
+                    format!("history entry is not replayable: {}", entry.raw),
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    fn change_directory(&mut self, target: Option<String>) -> Vec<Effect> {
+        let submitted_at = now_utc();
+        let current = self.state.commands.session.cwd.clone();
+        let previous = self.state.commands.session.previous_cwd.clone();
+        match resolve_cd_target(&current, previous.as_deref(), target.as_deref()) {
+            Ok(next_cwd) => {
+                self.push_shell_history(CommandHistoryEntry::builtin(
+                    cd_history_entry(target.as_deref()),
+                    current.clone(),
+                    self.state.commands.session.shell.clone(),
+                    crate::domain::SafetyClass::Passive,
+                    CommandStatus::Succeeded,
+                    Some(0),
+                    submitted_at,
+                ));
+                self.state.commands.session.previous_cwd = Some(current);
+                self.state.commands.session.cwd = next_cwd.clone();
+                self.state.commands.session.last_exit_status = Some(0);
+                self.append_timeline(
+                    TimelineKind::Command,
+                    format!("session cwd changed to {}", next_cwd.display()),
+                );
+                self.push_notification(
+                    NotificationLevel::Info,
+                    format!("cwd: {}", next_cwd.display()),
+                );
+            }
+            Err(message) => {
+                self.push_shell_history(CommandHistoryEntry::builtin(
+                    cd_history_entry(target.as_deref()),
+                    current.clone(),
+                    self.state.commands.session.shell.clone(),
+                    crate::domain::SafetyClass::Passive,
+                    CommandStatus::Failed,
+                    Some(1),
+                    submitted_at,
+                ));
+                self.state.commands.session.last_exit_status = Some(1);
+                self.state.diagnostics.records.push(DiagnosticRecord {
+                    at: now_utc(),
+                    level: DiagnosticLevel::Warn,
+                    message: message.clone(),
+                    context: Some(format!("cwd: {}", current.display())),
+                });
+                self.append_timeline(TimelineKind::Error, message.clone());
+                self.push_notification(NotificationLevel::Warn, message);
+            }
+        }
+
+        Vec::new()
     }
 
     fn prepare_ai_request(&mut self, prompt: String, kind: AiRequestKind) -> Vec<Effect> {
@@ -785,13 +962,22 @@ impl AppStore {
         vec![Effect::RunAiRequest(Box::new(request))]
     }
 
+    fn push_shell_history(&mut self, entry: CommandHistoryEntry) {
+        self.state.commands.history.push(entry);
+        if self.state.commands.history.len() > self.state.config.commands.history_limit {
+            let overflow =
+                self.state.commands.history.len() - self.state.config.commands.history_limit;
+            self.state.commands.history.drain(0..overflow);
+        }
+    }
+
     fn prepare_execution(
         &mut self,
         raw: String,
         background: bool,
         provenance: crate::domain::CommandProvenance,
     ) -> Vec<Effect> {
-        self.prepare_execution_internal(raw, background, provenance, None)
+        self.prepare_execution_internal(raw, background, provenance, None, None, None)
     }
 
     fn prepare_execution_internal(
@@ -800,19 +986,22 @@ impl AppStore {
         background: bool,
         provenance: crate::domain::CommandProvenance,
         proposal_context: Option<(usize, &AiActionProposal)>,
+        cwd_override: Option<PathBuf>,
+        shell_override: Option<String>,
     ) -> Vec<Effect> {
         let safety_class = classify_command(&raw);
         let command_id = self.ids.next_command();
         let job_id = self.ids.next_job();
         let service_id = background.then(|| self.ids.next_service());
+        let submitted_at = now_utc();
         let request = ExecutionRequest {
             command_id,
             job_id,
             service_id,
             raw: raw.clone(),
-            cwd: self.state.project.root.clone(),
-            env: BTreeMap::new(),
-            shell: self.state.config.commands.default_shell.clone(),
+            cwd: cwd_override.unwrap_or_else(|| self.state.commands.session.cwd.clone()),
+            env: self.state.commands.session.env.clone(),
+            shell: shell_override.unwrap_or_else(|| self.state.commands.session.shell.clone()),
             mode: ExecutionMode::Managed,
             provenance,
             background,
@@ -825,12 +1014,11 @@ impl AppStore {
             None => CommandStatus::Queued,
         };
 
-        self.state.commands.history.push(raw.clone());
-        if self.state.commands.history.len() > self.state.config.commands.history_limit {
-            let overflow =
-                self.state.commands.history.len() - self.state.config.commands.history_limit;
-            self.state.commands.history.drain(0..overflow);
-        }
+        self.push_shell_history(CommandHistoryEntry::from_request(
+            &request,
+            status,
+            submitted_at,
+        ));
 
         self.state
             .commands
@@ -961,6 +1149,8 @@ impl AppStore {
                 background,
                 provenance,
                 Some((proposal_index, &proposal)),
+                None,
+                None,
             ),
             _ => Vec::new(),
         }
@@ -992,6 +1182,9 @@ impl AppStore {
             if let Some(command) = self.find_command_mut(request.command_id) {
                 command.status = CommandStatus::Queued;
             }
+            self.update_history_for_command(request.command_id, |entry| {
+                entry.status = CommandStatus::Queued;
+            });
             self.append_timeline(
                 TimelineKind::Approval,
                 format!("approved command #{}", request.command_id),
@@ -999,13 +1192,18 @@ impl AppStore {
             return vec![Effect::ExecuteCommand(request.execution)];
         }
 
+        let denied_at = now_utc();
         if let Some(command) = self.find_command_mut(request.command_id) {
             command.status = CommandStatus::Denied;
-            command.ended_at = Some(now_utc());
+            command.ended_at = Some(denied_at);
         }
+        self.update_history_for_command(request.command_id, |entry| {
+            entry.status = CommandStatus::Denied;
+            entry.ended_at = Some(denied_at);
+        });
         if let Some(job) = self.find_job_by_command_mut(request.command_id) {
             job.status = JobStatus::Cancelled;
-            job.ended_at = Some(now_utc());
+            job.ended_at = Some(denied_at);
         }
         self.append_timeline(
             TimelineKind::Approval,
@@ -1018,7 +1216,7 @@ impl AppStore {
         if let Some(modal) = self.state.ui.modal.as_ref() {
             return match modal {
                 ModalState::Approval(id) => Some(*id),
-                ModalState::Help | ModalState::Error(_) => None,
+                ModalState::Help | ModalState::History | ModalState::Error(_) => None,
             };
         }
         self.current_inline_approval_id()
@@ -1090,6 +1288,23 @@ impl AppStore {
             .records
             .iter_mut()
             .find(|record| record.id == id)
+    }
+
+    fn update_history_for_command(
+        &mut self,
+        id: CommandId,
+        update: impl FnOnce(&mut CommandHistoryEntry),
+    ) {
+        if let Some(entry) = self
+            .state
+            .commands
+            .history
+            .iter_mut()
+            .rev()
+            .find(|entry| entry.command_id == Some(id))
+        {
+            update(entry);
+        }
     }
 
     fn find_job_mut(&mut self, id: crate::shared::ids::JobId) -> Option<&mut JobRecord> {
@@ -1165,6 +1380,72 @@ fn truncate_for_timeline(message: &str, max_len: usize) -> String {
         return trimmed.to_string();
     }
     format!("{}...", &trimmed[..max_len.saturating_sub(3)])
+}
+
+fn cd_history_entry(target: Option<&str>) -> String {
+    target
+        .map(str::trim)
+        .filter(|target| !target.is_empty())
+        .map(|target| format!("cd {target}"))
+        .unwrap_or_else(|| "cd".to_string())
+}
+
+fn next_id_after_restored_state(state: &AppState) -> u64 {
+    state
+        .commands
+        .history
+        .iter()
+        .filter_map(|entry| entry.command_id.map(|id| id.0))
+        .chain(state.commands.records.iter().map(|record| record.id.0))
+        .chain(state.jobs.records.iter().map(|record| record.id.0))
+        .chain(state.services.registry.iter().map(|record| record.id.0))
+        .chain(state.approvals.pending.iter().map(|record| record.id.0))
+        .chain(state.timeline.entries.iter().map(|record| record.id.0))
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1)
+}
+
+fn resolve_cd_target(
+    current: &Path,
+    previous: Option<&Path>,
+    target: Option<&str>,
+) -> Result<PathBuf, String> {
+    let candidate = match target.map(str::trim).filter(|target| !target.is_empty()) {
+        None => dirs::home_dir().ok_or_else(|| "cd: home directory is unavailable".to_string())?,
+        Some("-") => previous
+            .map(Path::to_path_buf)
+            .ok_or_else(|| "cd: no previous directory recorded".to_string())?,
+        Some(raw) => expand_cd_target(raw)?,
+    };
+
+    let candidate = if candidate.is_absolute() {
+        candidate
+    } else {
+        current.join(candidate)
+    };
+
+    let canonical = std::fs::canonicalize(&candidate)
+        .map_err(|error| format!("cd: {}: {error}", candidate.display()))?;
+    if !canonical.is_dir() {
+        return Err(format!("cd: not a directory: {}", canonical.display()));
+    }
+
+    Ok(canonical)
+}
+
+fn expand_cd_target(raw: &str) -> Result<PathBuf, String> {
+    if raw == "~" {
+        return dirs::home_dir().ok_or_else(|| "cd: home directory is unavailable".to_string());
+    }
+
+    if let Some(rest) = raw.strip_prefix("~/").or_else(|| raw.strip_prefix("~\\")) {
+        let home =
+            dirs::home_dir().ok_or_else(|| "cd: home directory is unavailable".to_string())?;
+        return Ok(home.join(rest));
+    }
+
+    Ok(PathBuf::from(raw))
 }
 
 fn approval_detail(

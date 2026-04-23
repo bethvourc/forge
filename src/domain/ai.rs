@@ -87,9 +87,18 @@ pub struct AiGitContext {
 }
 
 #[derive(Debug, Clone)]
+pub struct AiShellSessionContext {
+    pub cwd: PathBuf,
+    pub shell: String,
+    pub env_overlay_count: usize,
+    pub last_exit_status: Option<i32>,
+}
+
+#[derive(Debug, Clone)]
 pub struct AiCommandContext {
     pub id: CommandId,
     pub raw: String,
+    pub cwd: PathBuf,
     pub provenance: CommandProvenance,
     pub status: CommandStatus,
     pub exit_code: Option<i32>,
@@ -139,6 +148,7 @@ pub struct AiContextBundle {
     pub ui: AiUiContext,
     pub project: AiProjectContext,
     pub git: AiGitContext,
+    pub session: AiShellSessionContext,
     pub commands: Vec<AiCommandContext>,
     pub services: Vec<AiServiceContext>,
     pub tests: Vec<AiTestContext>,

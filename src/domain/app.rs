@@ -58,6 +58,7 @@ impl DashboardTab {
 pub enum ModalState {
     Approval(ApprovalId),
     Help,
+    History,
     Error(String),
 }
 
@@ -301,6 +302,8 @@ impl AppState {
     pub fn new(config: ForgeConfig, project: ProjectContext, git: GitSnapshot) -> Self {
         let diagnostics_capacity = config.observability.diagnostics_capacity;
         let global_log_capacity = config.logs.global_capacity;
+        let session_cwd = project.root.clone();
+        let session_shell = config.commands.default_shell.clone();
         Self {
             app: AppMetaState {
                 started_at: now_utc(),
@@ -319,7 +322,7 @@ impl AppState {
             config: config.clone(),
             project,
             git,
-            commands: CommandState::default(),
+            commands: CommandState::new(session_cwd, session_shell),
             jobs: JobState::default(),
             services: ServiceState::default(),
             processes: ProcessState::default(),

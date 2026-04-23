@@ -15,6 +15,8 @@ pub enum AppError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
+    Json(#[from] serde_json::Error),
+    #[error(transparent)]
     TomlDe(#[from] toml::de::Error),
     #[error(transparent)]
     Join(#[from] tokio::task::JoinError),

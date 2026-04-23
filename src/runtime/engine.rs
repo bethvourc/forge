@@ -9,6 +9,7 @@ use crate::ai::AiRuntime;
 use crate::app::{AppAction, AppEvent, AppStore, Effect, UiIntent};
 use crate::commands::{slash_palette_active, ParsedInput};
 use crate::domain::FocusTarget;
+use crate::infra::state as local_state;
 use crate::observability::ObservabilityHandle;
 use crate::runtime::RuntimeSupervisor;
 use crate::shared::error::AppResult;
@@ -94,7 +95,19 @@ impl Runtime {
         }
 
         info!("forge runtime shutting down");
+        let persist_result = self.persist_local_state();
         self.terminal.restore()?;
+        persist_result?;
+        Ok(())
+    }
+
+    fn persist_local_state(&self) -> AppResult<()> {
+        if let Some(path) = local_state::save_command_history(
+            &self.store.state().project.root,
+            &self.store.state().commands.history,
+        )? {
+            info!(path = %path.display(), "command history persisted");
+        }
         Ok(())
     }
 

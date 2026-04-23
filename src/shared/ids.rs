@@ -42,8 +42,12 @@ pub struct IdGenerator {
 
 impl IdGenerator {
     pub fn new() -> Self {
+        Self::starting_at(1)
+    }
+
+    pub fn starting_at(next: u64) -> Self {
         Self {
-            next: AtomicU64::new(1),
+            next: AtomicU64::new(next.max(1)),
         }
     }
 

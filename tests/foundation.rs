@@ -3,13 +3,14 @@ use std::time::SystemTime;
 
 use ratatui::{backend::TestBackend, style::Modifier, Terminal};
 
-use forge::app::{AppAction, AppStore, Effect};
+use forge::app::{AppAction, AppEvent, AppStore, Effect};
 use forge::commands::{parse_input, slash_command_suggestions, ParsedInput};
 use forge::config::ForgeConfig;
 use forge::domain::{
-    AiActionProposal, AiRequestKind, AiResponse, AppState, ApprovalMode, CommandProvenance,
-    CommandStatus, DashboardTab, FocusTarget, GitSnapshot, InputMode, LogEntry, LogSeverity,
-    LogSource, LogStream, ModalState, ProjectContext, SafetyClass,
+    AiActionProposal, AiRequestKind, AiResponse, AppState, ApprovalMode, CommandHistoryEntry,
+    CommandProvenance, CommandStatus, DashboardTab, DiagnosticLevel, FocusTarget, GitSnapshot,
+    InputMode, LogEntry, LogSeverity, LogSource, LogStream, ModalState, ProjectContext,
+    SafetyClass,
 };
 use forge::safety::classify_command;
 use forge::shared::ids::{AiRequestId, CommandId, LogId};
@@ -38,9 +39,33 @@ fn parses_plain_clear_as_forge_builtin() {
 }
 
 #[test]
+fn parses_cd_as_forge_builtin() {
+    match parse_input("cd src").expect("cd should parse as a builtin") {
+        ParsedInput::ChangeDirectory { target } => {
+            assert_eq!(target.as_deref(), Some("src"));
+        }
+        other => panic!("unexpected parse result: {:?}", other),
+    }
+
+    match parse_input("cd \"path with spaces\"").expect("quoted cd target should parse") {
+        ParsedInput::ChangeDirectory { target } => {
+            assert_eq!(target.as_deref(), Some("path with spaces"));
+        }
+        other => panic!("unexpected parse result: {:?}", other),
+    }
+
+    match parse_input("cd src && pwd").expect("compound shell command should remain shell input") {
+        ParsedInput::Execute { command, .. } => assert_eq!(command, "cd src && pwd"),
+        other => panic!("unexpected parse result: {:?}", other),
+    }
+}
+
+#[test]
 fn parses_supported_slash_commands() {
     assert!(matches!(parse_input("/quit").unwrap(), ParsedInput::Quit));
     assert!(matches!(parse_input("/exit").unwrap(), ParsedInput::Quit));
+    assert!(matches!(parse_input("exit").unwrap(), ParsedInput::Quit));
+    assert!(matches!(parse_input("quit").unwrap(), ParsedInput::Quit));
     assert!(matches!(parse_input("/clear").unwrap(), ParsedInput::Clear));
     assert!(matches!(
         parse_input("/tab next").unwrap(),
@@ -65,6 +90,18 @@ fn parses_supported_slash_commands() {
     assert!(matches!(
         parse_input("/deny").unwrap(),
         ParsedInput::DenyPending
+    ));
+    assert!(matches!(
+        parse_input("/history").unwrap(),
+        ParsedInput::History
+    ));
+    assert!(matches!(
+        parse_input("/rerun-last").unwrap(),
+        ParsedInput::RerunLast
+    ));
+    assert!(matches!(
+        parse_input("/rerun 12").unwrap(),
+        ParsedInput::Rerun(CommandId(12))
     ));
 
     match parse_input("/bg cargo run").unwrap() {
@@ -317,6 +354,231 @@ fn store_clear_resets_input_and_visible_logs() {
 }
 
 #[test]
+fn store_cd_changes_session_cwd_without_command_record() {
+    let mut store = test_store();
+    let expected = std::env::current_dir()
+        .expect("current dir should exist")
+        .join("src")
+        .canonicalize()
+        .expect("src dir should exist");
+
+    let effects = store.dispatch_action(AppAction::ParsedInput(ParsedInput::ChangeDirectory {
+        target: Some("src".to_string()),
+    }));
+
+    assert!(effects.is_empty());
+    assert_eq!(store.state().commands.session.cwd, expected);
+    assert_eq!(store.state().commands.session.last_exit_status, Some(0));
+    let history = store.state().commands.history.last().unwrap();
+    assert_eq!(history.raw, "cd src");
+    assert_eq!(history.status, CommandStatus::Succeeded);
+    assert_eq!(history.exit_code, Some(0));
+    assert!(store.state().commands.records.is_empty());
+    assert!(store.state().jobs.records.is_empty());
+}
+
+#[test]
+fn store_failed_cd_surfaces_diagnostic_without_changing_cwd() {
+    let mut store = test_store();
+    let before = store.state().commands.session.cwd.clone();
+
+    let effects = store.dispatch_action(AppAction::ParsedInput(ParsedInput::ChangeDirectory {
+        target: Some("does-not-exist-for-forge-session".to_string()),
+    }));
+
+    assert!(effects.is_empty());
+    assert_eq!(store.state().commands.session.cwd, before);
+    assert_eq!(store.state().commands.session.last_exit_status, Some(1));
+    assert!(store.state().commands.records.is_empty());
+    let diagnostic = store
+        .state()
+        .diagnostics
+        .records
+        .iter()
+        .last()
+        .expect("failed cd should record a diagnostic");
+    assert!(matches!(diagnostic.level, DiagnosticLevel::Warn));
+    assert!(diagnostic.message.contains("cd:"));
+}
+
+#[test]
+fn store_executes_commands_from_session_cwd() {
+    let mut store = test_store();
+    store.dispatch_action(AppAction::ParsedInput(ParsedInput::ChangeDirectory {
+        target: Some("src".to_string()),
+    }));
+    let expected_cwd = store.state().commands.session.cwd.clone();
+
+    let effects = store.dispatch_action(AppAction::ParsedInput(ParsedInput::Execute {
+        command: "pwd".to_string(),
+        background: false,
+        provenance: CommandProvenance::UserInput,
+    }));
+
+    match effects.as_slice() {
+        [Effect::ExecuteCommand(request)] => {
+            assert_eq!(request.cwd, expected_cwd);
+            assert_eq!(request.shell, store.state().commands.session.shell);
+        }
+        other => panic!("unexpected effects: {:?}", other),
+    }
+}
+
+#[test]
+fn store_history_command_opens_modal() {
+    let mut store = test_store();
+
+    let effects = store.dispatch_action(AppAction::ParsedInput(ParsedInput::History));
+
+    assert!(effects.is_empty());
+    assert!(matches!(store.state().ui.modal, Some(ModalState::History)));
+    assert!(matches!(store.state().ui.focus, FocusTarget::Modal));
+}
+
+#[test]
+fn command_history_preserves_execution_metadata() {
+    let mut store = test_store();
+
+    let effects = store.dispatch_action(AppAction::ParsedInput(ParsedInput::Execute {
+        command: "pwd".to_string(),
+        background: false,
+        provenance: CommandProvenance::UserInput,
+    }));
+
+    assert!(matches!(effects.as_slice(), [Effect::ExecuteCommand(_)]));
+    let command = store.state().commands.records.last().unwrap();
+    let history = store.state().commands.history.last().unwrap();
+    assert_eq!(history.command_id, Some(command.id));
+    assert_eq!(history.raw, "pwd");
+    assert_eq!(history.cwd, command.cwd);
+    assert_eq!(history.shell, store.state().commands.session.shell);
+    assert_eq!(history.provenance, CommandProvenance::UserInput);
+    assert_eq!(history.safety_class, SafetyClass::Passive);
+    assert_eq!(history.status, CommandStatus::Queued);
+}
+
+#[test]
+fn command_exit_updates_session_last_status() {
+    let mut store = test_store();
+
+    let effects = store.dispatch_action(AppAction::ParsedInput(ParsedInput::Execute {
+        command: "pwd".to_string(),
+        background: false,
+        provenance: CommandProvenance::UserInput,
+    }));
+
+    let [Effect::ExecuteCommand(request)] = effects.as_slice() else {
+        panic!("expected execute command effect: {:?}", effects);
+    };
+
+    store.dispatch_event(AppEvent::CommandExited {
+        command_id: request.command_id,
+        job_id: request.job_id,
+        service_id: request.service_id,
+        exit_code: 7,
+    });
+
+    assert_eq!(store.state().commands.session.last_exit_status, Some(7));
+    let history = store.state().commands.history.last().unwrap();
+    assert_eq!(history.status, CommandStatus::Failed);
+    assert_eq!(history.exit_code, Some(7));
+}
+
+#[test]
+fn store_rerun_last_uses_recorded_cwd_and_safety_pipeline() {
+    let mut store = test_store();
+    let replay_cwd = std::env::current_dir()
+        .expect("current dir should exist")
+        .join("src")
+        .canonicalize()
+        .expect("src dir should exist");
+    store.state_mut().commands.history = vec![history_entry_with(
+        Some(CommandId(42)),
+        "pwd",
+        replay_cwd.clone(),
+        false,
+        SafetyClass::Passive,
+    )];
+
+    let effects = store.dispatch_action(AppAction::ParsedInput(ParsedInput::RerunLast));
+
+    match effects.as_slice() {
+        [Effect::ExecuteCommand(request)] => {
+            assert_eq!(request.raw, "pwd");
+            assert_eq!(request.cwd, replay_cwd);
+            assert!(matches!(
+                request.provenance,
+                CommandProvenance::SlashCommand
+            ));
+        }
+        other => panic!("unexpected effects: {:?}", other),
+    }
+}
+
+#[test]
+fn store_rerun_risky_command_requires_approval_again() {
+    let mut store = test_store();
+    let replay_cwd = store.state().commands.session.cwd.clone();
+    store.state_mut().commands.history = vec![history_entry_with(
+        Some(CommandId(42)),
+        "echo hi > /tmp/forge-test.txt",
+        replay_cwd.clone(),
+        false,
+        SafetyClass::Risky,
+    )];
+
+    let effects = store.dispatch_action(AppAction::ParsedInput(ParsedInput::Rerun(CommandId(42))));
+
+    assert!(matches!(effects.as_slice(), [Effect::QueueApproval(_)]));
+    let approval = store.state().approvals.pending.last().unwrap();
+    assert_eq!(approval.execution.raw, "echo hi > /tmp/forge-test.txt");
+    assert_eq!(approval.execution.cwd, replay_cwd);
+    assert!(matches!(approval.mode, ApprovalMode::ModalConfirm));
+}
+
+#[test]
+fn restored_history_advances_new_command_ids() {
+    let mut state = AppState::new(
+        ForgeConfig::default(),
+        ProjectContext::default(),
+        GitSnapshot::default(),
+    );
+    state.commands.history = vec![history_entry_with(
+        Some(CommandId(42)),
+        "pwd",
+        state.commands.session.cwd.clone(),
+        false,
+        SafetyClass::Passive,
+    )];
+    let mut store = AppStore::new(state);
+
+    let effects = store.dispatch_action(AppAction::ParsedInput(ParsedInput::Execute {
+        command: "pwd".to_string(),
+        background: false,
+        provenance: CommandProvenance::UserInput,
+    }));
+
+    let [Effect::ExecuteCommand(request)] = effects.as_slice() else {
+        panic!("expected execute command effect: {:?}", effects);
+    };
+    assert!(request.command_id.0 > 42);
+}
+
+#[test]
+fn ai_context_includes_shell_session_state() {
+    let mut store = test_store();
+    store.dispatch_action(AppAction::ParsedInput(ParsedInput::ChangeDirectory {
+        target: Some("src".to_string()),
+    }));
+
+    let context = forge::ai::build_context(store.state());
+
+    assert_eq!(context.session.cwd, store.state().commands.session.cwd);
+    assert_eq!(context.session.shell, store.state().commands.session.shell);
+    assert_eq!(context.session.last_exit_status, Some(0));
+}
+
+#[test]
 fn store_submits_plain_prompt_in_ai_mode() {
     let mut store = test_store();
     store.state_mut().ui.input.set_mode(InputMode::AiAssist);
@@ -339,7 +601,7 @@ fn store_submits_plain_prompt_in_ai_mode() {
 #[test]
 fn store_recalls_shell_history() {
     let mut store = test_store();
-    store.state_mut().commands.history = vec!["pwd".to_string(), "cargo test".to_string()];
+    store.state_mut().commands.history = vec![history_entry("pwd"), history_entry("cargo test")];
     store.dispatch_action(AppAction::Ui(forge::app::UiIntent::RecallPreviousHistory));
     assert_eq!(store.state().ui.input.buffer, "cargo test");
 
@@ -464,10 +726,70 @@ fn ui_renders_prompt_first_wireframe_details() {
     );
 }
 
+#[test]
+fn command_history_persists_as_jsonl() {
+    let root = unique_temp_root();
+    let entries = vec![history_entry("pwd")];
+
+    let path = forge::infra::state::save_command_history(&root, &entries)
+        .expect("history should save")
+        .expect("history path should be returned");
+    let loaded = forge::infra::state::load_command_history(&root, 10).expect("history should load");
+
+    assert!(path.ends_with(".forge/state/command-history.jsonl"));
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(loaded[0].raw, "pwd");
+    assert_eq!(loaded[0].status, CommandStatus::Succeeded);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
 fn test_store() -> AppStore {
     let config = ForgeConfig::default();
     let state = AppState::new(config, ProjectContext::default(), GitSnapshot::default());
     AppStore::new(state)
+}
+
+fn history_entry(raw: &str) -> CommandHistoryEntry {
+    history_entry_with(
+        None,
+        raw,
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        false,
+        classify_command(raw),
+    )
+}
+
+fn history_entry_with(
+    command_id: Option<CommandId>,
+    raw: &str,
+    cwd: std::path::PathBuf,
+    background: bool,
+    safety_class: SafetyClass,
+) -> CommandHistoryEntry {
+    let now = now_utc();
+    CommandHistoryEntry {
+        command_id,
+        raw: raw.to_string(),
+        cwd,
+        shell: std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string()),
+        provenance: CommandProvenance::UserInput,
+        background,
+        safety_class,
+        status: CommandStatus::Succeeded,
+        submitted_at: now,
+        started_at: Some(now),
+        ended_at: Some(now),
+        exit_code: Some(0),
+    }
+}
+
+fn unique_temp_root() -> std::path::PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system time should be after epoch")
+        .as_nanos();
+    std::env::temp_dir().join(format!("forge-history-test-{}-{nanos}", std::process::id()))
 }
 
 fn buffer_rows(buffer: &ratatui::buffer::Buffer) -> Vec<String> {

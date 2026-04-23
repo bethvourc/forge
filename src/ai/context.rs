@@ -1,7 +1,7 @@
 use crate::domain::{
     AiCommandContext, AiContextBundle, AiGitContext, AiLogContext, AiProjectContext,
-    AiServiceContext, AiTestContext, AiTimelineContext, AiUiContext, AppState, FocusTarget,
-    LogSource, ModalState,
+    AiServiceContext, AiShellSessionContext, AiTestContext, AiTimelineContext, AiUiContext,
+    AppState, FocusTarget, LogSource, ModalState,
 };
 
 pub fn build_context(state: &AppState) -> AiContextBundle {
@@ -39,6 +39,12 @@ pub fn build_context(state: &AppState) -> AiContextBundle {
                 .cloned()
                 .collect(),
         },
+        session: AiShellSessionContext {
+            cwd: state.commands.session.cwd.clone(),
+            shell: state.commands.session.shell.clone(),
+            env_overlay_count: state.commands.session.env.len(),
+            last_exit_status: state.commands.session.last_exit_status,
+        },
         commands: state
             .commands
             .records
@@ -48,6 +54,7 @@ pub fn build_context(state: &AppState) -> AiContextBundle {
             .map(|record| AiCommandContext {
                 id: record.id,
                 raw: record.raw.clone(),
+                cwd: record.cwd.clone(),
                 provenance: record.provenance,
                 status: record.status,
                 exit_code: record.exit_code,
@@ -128,6 +135,7 @@ fn modal_label(modal: &ModalState) -> String {
     match modal {
         ModalState::Approval(id) => format!("approval:{id}"),
         ModalState::Help => "help".to_string(),
+        ModalState::History => "history".to_string(),
         ModalState::Error(_) => "error".to_string(),
     }
 }
