@@ -137,6 +137,10 @@ pub fn parse_input(input: &str) -> Result<ParsedInput, String> {
         return Err("input is empty".to_string());
     }
 
+    if trimmed == "clear" {
+        return Ok(ParsedInput::Clear);
+    }
+
     if !trimmed.starts_with('/') {
         return parse_shell_input(trimmed, CommandProvenance::UserInput);
     }

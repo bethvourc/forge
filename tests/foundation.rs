@@ -33,6 +33,11 @@ fn parses_background_shell_execution() {
 }
 
 #[test]
+fn parses_plain_clear_as_forge_builtin() {
+    assert!(matches!(parse_input("clear").unwrap(), ParsedInput::Clear));
+}
+
+#[test]
 fn parses_supported_slash_commands() {
     assert!(matches!(parse_input("/quit").unwrap(), ParsedInput::Quit));
     assert!(matches!(parse_input("/exit").unwrap(), ParsedInput::Quit));
@@ -419,8 +424,8 @@ fn ui_renders_prompt_first_wireframe_details() {
     let buffer = terminal.backend().buffer();
     let rows = buffer_rows(buffer);
     assert!(
-        rows[1].contains("forge   /   foundation"),
-        "status identity should read like the uploaded wireframe"
+        rows[1].contains("forge   |   forge/foundation"),
+        "status identity should show the app name and full branch"
     );
     assert!(
         rows[2].contains("────"),

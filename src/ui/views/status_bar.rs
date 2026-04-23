@@ -21,8 +21,6 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         .unwrap_or_else(|| "------".to_string());
     let dirty = if state.git.is_dirty { "dirty" } else { "clean" };
 
-    let project = truncate_end(&state.project.name, 18);
-
     let running = state
         .services
         .registry
@@ -36,25 +34,6 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             )
         })
         .count();
-
-    let branch_display = truncate_middle(&branch_leaf(&branch), 28);
-    let left = if project.eq_ignore_ascii_case("forge") {
-        vec![
-            Span::raw("  "),
-            Span::styled("forge", theme::italic_serif()),
-            Span::styled("   /   ", theme::subtle()),
-            Span::styled(branch_display, theme::status_context()),
-        ]
-    } else {
-        vec![
-            Span::raw("  "),
-            Span::styled("forge", theme::italic_serif()),
-            Span::styled("   /   ", theme::subtle()),
-            Span::styled(project, theme::status_context()),
-            Span::styled("   /   ", theme::subtle()),
-            Span::styled(branch_display, theme::status_context()),
-        ]
-    };
 
     let mut right: Vec<Span<'static>> = Vec::new();
     if running > 0 {
@@ -97,6 +76,16 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         width: text_area.width.saturating_sub(mid),
         height: 1,
     };
+    let branch_display = truncate_middle(
+        &normalize_branch(&branch),
+        left_area.width.saturating_sub(14) as usize,
+    );
+    let left = vec![
+        Span::raw("  "),
+        Span::styled("forge", theme::italic_serif()),
+        Span::styled("   |   ", theme::subtle()),
+        Span::styled(branch_display, theme::status_context()),
+    ];
 
     frame.render_widget(
         Paragraph::new(Line::from(left)).style(theme::chrome_surface()),
@@ -155,11 +144,6 @@ fn truncate_middle(value: &str, max_chars: usize) -> String {
     format!("{start}…{end}")
 }
 
-fn branch_leaf(branch: &str) -> String {
-    branch
-        .rsplit('/')
-        .next()
-        .filter(|value| !value.is_empty())
-        .unwrap_or(branch)
-        .to_string()
+fn normalize_branch(branch: &str) -> String {
+    branch.replace('\\', "/")
 }
