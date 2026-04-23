@@ -6,11 +6,11 @@ use crate::commands::{parse_input, parse_shell_input, slash_command_suggestions,
 use crate::domain::{
     AiActionProposal, AiMessage, AiMessageRole, AiRequest, AiRequestKind, AiStatus, AppState,
     ApprovalDecision, ApprovalMode, ApprovalRequest, CommandHistoryEntry, CommandRecord,
-    CommandStatus, DashboardTab, DiagnosticLevel, DiagnosticRecord, ExecutionMode,
-    ExecutionRequest, FocusTarget, InputMode, JobRecord, JobStatus, ModalState, Notification,
-    NotificationLevel, ProcessSnapshot, ProcessStatus, ServiceHealth, ServiceRecord, ServiceSource,
-    TimelineEntry, TimelineKind,
+    CommandStatus, DashboardTab, DiagnosticLevel, DiagnosticRecord, ExecutionRequest, FocusTarget,
+    InputMode, JobRecord, JobStatus, ModalState, Notification, NotificationLevel, ProcessSnapshot,
+    ProcessStatus, ServiceHealth, ServiceRecord, ServiceSource, TimelineEntry, TimelineKind,
 };
+use crate::infra::shell;
 use crate::safety::{approval_message, approval_mode_for, classify_command};
 use crate::shared::ids::{ApprovalId, CommandId, IdGenerator};
 use crate::shared::time::now_utc;
@@ -1002,7 +1002,7 @@ impl AppStore {
             cwd: cwd_override.unwrap_or_else(|| self.state.commands.session.cwd.clone()),
             env: self.state.commands.session.env.clone(),
             shell: shell_override.unwrap_or_else(|| self.state.commands.session.shell.clone()),
-            mode: ExecutionMode::Managed,
+            mode: shell::execution_mode_for(&raw, background),
             provenance,
             background,
             safety_class,

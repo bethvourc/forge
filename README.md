@@ -49,9 +49,8 @@ Forge is not yet complete end to end. The remaining work is tracked in `docs/IMP
 
 Major remaining areas include:
 
-- PTY-backed interactive shell support
-- persistent shell sessions and cwd handling
-- durable command history and approval audit history
+- persistent PTY shell sessions and interactive shell polish
+- approval audit history and session restore hardening
 - real service discovery, port inspection, and health checks
 - process CPU/memory monitoring
 - file and service log ingestion

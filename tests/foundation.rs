@@ -8,9 +8,9 @@ use forge::commands::{parse_input, slash_command_suggestions, ParsedInput};
 use forge::config::ForgeConfig;
 use forge::domain::{
     AiActionProposal, AiRequestKind, AiResponse, AppState, ApprovalMode, CommandHistoryEntry,
-    CommandProvenance, CommandStatus, DashboardTab, DiagnosticLevel, FocusTarget, GitSnapshot,
-    InputMode, LogEntry, LogSeverity, LogSource, LogStream, ModalState, ProjectContext,
-    SafetyClass,
+    CommandProvenance, CommandStatus, DashboardTab, DiagnosticLevel, ExecutionMode, FocusTarget,
+    GitSnapshot, InputMode, LogEntry, LogSeverity, LogSource, LogStream, ModalState,
+    ProjectContext, SafetyClass,
 };
 use forge::safety::classify_command;
 use forge::shared::ids::{AiRequestId, CommandId, LogId};
@@ -199,6 +199,26 @@ fn store_executes_passive_shell_command_immediately() {
         .expect("command record should exist");
     assert_eq!(command.raw, "pwd");
     assert!(matches!(command.status, CommandStatus::Queued));
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::ExecuteCommand(request)] if matches!(request.mode, ExecutionMode::Managed)
+    ));
+}
+
+#[test]
+fn store_routes_interactive_foreground_commands_to_pty() {
+    let mut store = test_store();
+
+    let effects = store.dispatch_action(AppAction::ParsedInput(ParsedInput::Execute {
+        command: "top".to_string(),
+        background: false,
+        provenance: CommandProvenance::UserInput,
+    }));
+
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::ExecuteCommand(request)] if matches!(request.mode, ExecutionMode::Pty)
+    ));
 }
 
 #[test]

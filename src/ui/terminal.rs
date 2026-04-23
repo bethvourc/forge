@@ -1,8 +1,8 @@
-use std::io::{self, Stdout};
+use std::io::{self, Stdout, Write};
 
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
@@ -35,6 +35,23 @@ impl TerminalUi {
     pub fn restore(&mut self) -> AppResult<()> {
         restore_terminal()?;
         self.terminal.show_cursor()?;
+        Ok(())
+    }
+
+    pub fn begin_pty_session(&mut self) -> AppResult<()> {
+        self.terminal.show_cursor()?;
+        let mut stdout = io::stdout();
+        execute!(
+            stdout,
+            Clear(ClearType::All),
+            crossterm::cursor::MoveTo(0, 0)
+        )?;
+        stdout.flush()?;
+        Ok(())
+    }
+
+    pub fn end_pty_session(&mut self) -> AppResult<()> {
+        self.terminal.hide_cursor()?;
         Ok(())
     }
 }

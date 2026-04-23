@@ -70,10 +70,26 @@ pub enum InfraError {
     Project { path: PathBuf, message: String },
     #[error("ai provider `{provider}` failed: {message}")]
     Ai { provider: String, message: String },
+    #[error("pty {phase} failed: {message}")]
+    Pty { phase: PtyPhase, message: String },
     #[error("terminal failure: {0}")]
     Terminal(String),
     #[error("runtime failure: {0}")]
     Runtime(String),
+}
+
+#[derive(Debug, Clone, Copy, Error)]
+pub enum PtyPhase {
+    #[error("setup")]
+    Setup,
+    #[error("read")]
+    Read,
+    #[error("write")]
+    Write,
+    #[error("resize")]
+    Resize,
+    #[error("shutdown")]
+    Shutdown,
 }
 
 impl AppError {

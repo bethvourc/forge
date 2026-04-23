@@ -80,14 +80,11 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         &normalize_branch(&branch),
         left_area.width.saturating_sub(14) as usize,
     );
-    let cwd_display = truncate_middle(&compact_path(&state.commands.session.cwd), 24);
     let left = vec![
         Span::raw("  "),
         Span::styled("forge", theme::italic_serif()),
         Span::styled("   |   ", theme::subtle()),
         Span::styled(branch_display, theme::status_context()),
-        Span::styled("  ·  ", theme::subtle()),
-        Span::styled(cwd_display, theme::muted()),
     ];
 
     frame.render_widget(
@@ -149,20 +146,4 @@ fn truncate_middle(value: &str, max_chars: usize) -> String {
 
 fn normalize_branch(branch: &str) -> String {
     branch.replace('\\', "/")
-}
-
-fn compact_path(path: &std::path::Path) -> String {
-    let components = path
-        .components()
-        .filter_map(|component| match component {
-            std::path::Component::Normal(value) => Some(value.to_string_lossy().into_owned()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-
-    match components.as_slice() {
-        [] => path.display().to_string(),
-        [only] => only.clone(),
-        [.., parent, leaf] => format!("{parent}/{leaf}"),
-    }
 }

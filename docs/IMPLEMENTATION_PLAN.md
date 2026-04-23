@@ -120,7 +120,7 @@ Forge should behave like a trustworthy terminal-native command surface. Users sh
 
 Managed non-interactive shell execution exists. Commands are spawned through the configured shell, stdout/stderr are streamed line-by-line, and lifecycle events update command, job, process, log, and timeline state.
 
-PTY execution and persistent shell sessions are not implemented yet.
+Forge-managed shell session state exists for cwd, last exit status, and command history persistence and replay. PTY-backed interactive foreground command execution is implemented for Unix-like systems. Persistent PTY shell sessions across multiple commands are not implemented yet.
 
 ## Primary modules
 
