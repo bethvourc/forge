@@ -107,6 +107,9 @@ impl Runtime {
 
         info!("forge runtime shutting down");
         self.shutdown_active_pty().await?;
+        self.supervisor
+            .shutdown_commands(Duration::from_secs(2))
+            .await?;
         let persist_result = self.persist_local_state();
         self.terminal.restore()?;
         persist_result?;
@@ -120,6 +123,11 @@ impl Runtime {
         )? {
             info!(path = %path.display(), "command history persisted");
         }
+        let session_path = local_state::save_shell_session(
+            &self.store.state().project.root,
+            &self.store.state().commands.session,
+        )?;
+        info!(path = %session_path.display(), "shell session persisted");
         Ok(())
     }
 

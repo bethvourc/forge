@@ -43,6 +43,11 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         right.push(Span::styled("  ·  ", theme::subtle()));
     }
     right.push(Span::styled(
+        truncate_middle(&state.commands.session.cwd.display().to_string(), 28),
+        theme::subtle(),
+    ));
+    right.push(Span::styled("  ·  ", theme::subtle()));
+    right.push(Span::styled(
         dirty,
         if state.git.is_dirty {
             theme::warn_accent()

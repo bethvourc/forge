@@ -4,10 +4,11 @@ use std::path::{Path, PathBuf};
 
 use tracing::warn;
 
-use crate::domain::CommandHistoryEntry;
-use crate::shared::error::AppResult;
+use crate::domain::{CommandHistoryEntry, ShellSessionState};
+use crate::shared::error::{AppResult, InfraError};
 
 const COMMAND_HISTORY_FILE: &str = "command-history.jsonl";
+const SESSION_FILE: &str = "session.toml";
 
 pub fn workspace_state_dir(project_root: &Path) -> PathBuf {
     project_root.join(".forge").join("state")
@@ -15,6 +16,10 @@ pub fn workspace_state_dir(project_root: &Path) -> PathBuf {
 
 pub fn command_history_path(project_root: &Path) -> PathBuf {
     workspace_state_dir(project_root).join(COMMAND_HISTORY_FILE)
+}
+
+pub fn shell_session_path(project_root: &Path) -> PathBuf {
+    workspace_state_dir(project_root).join(SESSION_FILE)
 }
 
 pub fn load_command_history(
@@ -80,6 +85,32 @@ pub fn save_command_history(
 
     fs::rename(&tmp_path, &path)?;
     Ok(Some(path))
+}
+
+pub fn load_shell_session(project_root: &Path) -> AppResult<Option<ShellSessionState>> {
+    let path = shell_session_path(project_root);
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let raw = fs::read_to_string(&path)?;
+    let session = toml::from_str::<ShellSessionState>(&raw)?;
+    Ok(Some(session))
+}
+
+pub fn save_shell_session(project_root: &Path, session: &ShellSessionState) -> AppResult<PathBuf> {
+    let path = shell_session_path(project_root);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let raw = toml::to_string_pretty(session).map_err(|error| {
+        InfraError::Runtime(format!("failed to serialize shell session state: {error}"))
+    })?;
+    let tmp_path = path.with_extension("toml.tmp");
+    fs::write(&tmp_path, raw)?;
+    fs::rename(&tmp_path, &path)?;
+    Ok(path)
 }
 
 fn trim_history(entries: &mut Vec<CommandHistoryEntry>, limit: usize) {

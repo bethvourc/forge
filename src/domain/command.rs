@@ -177,7 +177,7 @@ impl CommandState {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ShellSessionState {
     pub cwd: PathBuf,
     pub previous_cwd: Option<PathBuf>,

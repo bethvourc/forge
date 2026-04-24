@@ -10,7 +10,7 @@ use forge::domain::{
     AiActionProposal, AiRequestKind, AiResponse, AppState, ApprovalMode, CommandHistoryEntry,
     CommandProvenance, CommandStatus, DashboardTab, DiagnosticLevel, ExecutionMode, FocusTarget,
     GitSnapshot, InputMode, LogEntry, LogSeverity, LogSource, LogStream, ModalState,
-    ProjectContext, SafetyClass,
+    ProjectContext, SafetyClass, ShellSessionState,
 };
 use forge::safety::classify_command;
 use forge::shared::ids::{AiRequestId, CommandId, LogId};
@@ -56,6 +56,28 @@ fn parses_cd_as_forge_builtin() {
 
     match parse_input("cd src && pwd").expect("compound shell command should remain shell input") {
         ParsedInput::Execute { command, .. } => assert_eq!(command, "cd src && pwd"),
+        other => panic!("unexpected parse result: {:?}", other),
+    }
+}
+
+#[test]
+fn parses_session_env_builtins() {
+    match parse_input("export FORGE_MODE=local").expect("export should parse as a session builtin")
+    {
+        ParsedInput::SetEnv { key, value } => {
+            assert_eq!(key, "FORGE_MODE");
+            assert_eq!(value, "local");
+        }
+        other => panic!("unexpected parse result: {:?}", other),
+    }
+
+    match parse_input("unset FORGE_MODE").expect("unset should parse as a session builtin") {
+        ParsedInput::UnsetEnv { key } => assert_eq!(key, "FORGE_MODE"),
+        other => panic!("unexpected parse result: {:?}", other),
+    }
+
+    match parse_input("export 1BAD=value").expect("invalid export should remain shell input") {
+        ParsedInput::Execute { command, .. } => assert_eq!(command, "export 1BAD=value"),
         other => panic!("unexpected parse result: {:?}", other),
     }
 }
@@ -445,6 +467,44 @@ fn store_executes_commands_from_session_cwd() {
 }
 
 #[test]
+fn store_executes_commands_with_session_env_overlay() {
+    let mut store = test_store();
+    let set_effects = store.dispatch_action(AppAction::ParsedInput(ParsedInput::SetEnv {
+        key: "FORGE_MODE".to_string(),
+        value: "local".to_string(),
+    }));
+    assert!(set_effects.is_empty());
+
+    let effects = store.dispatch_action(AppAction::ParsedInput(ParsedInput::Execute {
+        command: "echo $FORGE_MODE".to_string(),
+        background: false,
+        provenance: CommandProvenance::UserInput,
+    }));
+
+    match effects.as_slice() {
+        [Effect::ExecuteCommand(request)] => {
+            assert_eq!(
+                request.env.get("FORGE_MODE").map(String::as_str),
+                Some("local")
+            );
+        }
+        other => panic!("unexpected effects: {:?}", other),
+    }
+
+    let unset_effects = store.dispatch_action(AppAction::ParsedInput(ParsedInput::UnsetEnv {
+        key: "FORGE_MODE".to_string(),
+    }));
+    assert!(unset_effects.is_empty());
+    assert!(!store
+        .state()
+        .commands
+        .session
+        .env
+        .contains_key("FORGE_MODE"));
+    assert_eq!(store.state().commands.session.last_exit_status, Some(0));
+}
+
+#[test]
 fn store_history_command_opens_modal() {
     let mut store = test_store();
 
@@ -760,6 +820,38 @@ fn command_history_persists_as_jsonl() {
     assert_eq!(loaded.len(), 1);
     assert_eq!(loaded[0].raw, "pwd");
     assert_eq!(loaded[0].status, CommandStatus::Succeeded);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn shell_session_persists_as_toml() {
+    let root = unique_temp_root();
+    let mut session = ShellSessionState::new(
+        std::env::current_dir().expect("current dir should exist"),
+        "/bin/zsh".to_string(),
+    );
+    session.previous_cwd = Some(root.clone());
+    session
+        .env
+        .insert("FORGE_MODE".to_string(), "local".to_string());
+    session.last_exit_status = Some(7);
+
+    let path =
+        forge::infra::state::save_shell_session(&root, &session).expect("session should save");
+    let loaded = forge::infra::state::load_shell_session(&root)
+        .expect("session should load")
+        .expect("session should exist");
+
+    assert!(path.ends_with(".forge/state/session.toml"));
+    assert_eq!(loaded.cwd, session.cwd);
+    assert_eq!(loaded.previous_cwd, session.previous_cwd);
+    assert_eq!(loaded.shell, "/bin/zsh");
+    assert_eq!(
+        loaded.env.get("FORGE_MODE").map(String::as_str),
+        Some("local")
+    );
+    assert_eq!(loaded.last_exit_status, Some(7));
 
     let _ = std::fs::remove_dir_all(root);
 }

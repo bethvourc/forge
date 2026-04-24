@@ -575,6 +575,8 @@ impl AppStore {
                 provenance,
             } => self.prepare_execution(command, background, provenance),
             ParsedInput::ChangeDirectory { target } => self.change_directory(target),
+            ParsedInput::SetEnv { key, value } => self.set_session_env(key, value),
+            ParsedInput::UnsetEnv { key } => self.unset_session_env(key),
             ParsedInput::Quit => self.dispatch_action(AppAction::Ui(UiIntent::Quit)),
             ParsedInput::Clear => {
                 self.state.ui.input.clear();
@@ -843,6 +845,8 @@ impl AppStore {
                 Some(entry.shell),
             ),
             ParsedInput::ChangeDirectory { target } => self.change_directory(target),
+            ParsedInput::SetEnv { key, value } => self.set_session_env(key, value),
+            ParsedInput::UnsetEnv { key } => self.unset_session_env(key),
             ParsedInput::Clear => self.handle_parsed_input(ParsedInput::Clear),
             ParsedInput::Quit => {
                 self.push_notification(
@@ -910,6 +914,43 @@ impl AppStore {
             }
         }
 
+        Vec::new()
+    }
+
+    fn set_session_env(&mut self, key: String, value: String) -> Vec<Effect> {
+        let submitted_at = now_utc();
+        let raw = format!("export {key}={value}");
+        self.push_shell_history(CommandHistoryEntry::builtin(
+            raw,
+            self.state.commands.session.cwd.clone(),
+            self.state.commands.session.shell.clone(),
+            crate::domain::SafetyClass::Safe,
+            CommandStatus::Succeeded,
+            Some(0),
+            submitted_at,
+        ));
+        self.state.commands.session.env.insert(key.clone(), value);
+        self.state.commands.session.last_exit_status = Some(0);
+        self.append_timeline(TimelineKind::Command, format!("session env set: {key}"));
+        self.push_notification(NotificationLevel::Info, format!("env set: {key}"));
+        Vec::new()
+    }
+
+    fn unset_session_env(&mut self, key: String) -> Vec<Effect> {
+        let submitted_at = now_utc();
+        self.push_shell_history(CommandHistoryEntry::builtin(
+            format!("unset {key}"),
+            self.state.commands.session.cwd.clone(),
+            self.state.commands.session.shell.clone(),
+            crate::domain::SafetyClass::Safe,
+            CommandStatus::Succeeded,
+            Some(0),
+            submitted_at,
+        ));
+        self.state.commands.session.env.remove(&key);
+        self.state.commands.session.last_exit_status = Some(0);
+        self.append_timeline(TimelineKind::Command, format!("session env unset: {key}"));
+        self.push_notification(NotificationLevel::Info, format!("env unset: {key}"));
         Vec::new()
     }
 

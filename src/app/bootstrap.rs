@@ -45,6 +45,28 @@ pub async fn bootstrap(cli: CliArgs) -> AppResult<Runtime> {
             });
         }
     }
+    match local_state::load_shell_session(&state.project.root) {
+        Ok(Some(session)) if session.cwd.is_dir() => {
+            state.commands.session = session;
+        }
+        Ok(Some(session)) => {
+            state.diagnostics.records.push(DiagnosticRecord {
+                at: now_utc(),
+                level: DiagnosticLevel::Warn,
+                message: "saved shell session cwd is no longer available".to_string(),
+                context: Some(session.cwd.display().to_string()),
+            });
+        }
+        Ok(None) => {}
+        Err(error) => {
+            state.diagnostics.records.push(DiagnosticRecord {
+                at: now_utc(),
+                level: DiagnosticLevel::Warn,
+                message: format!("failed to load shell session: {error}"),
+                context: Some(state.project.root.display().to_string()),
+            });
+        }
+    }
     state.diagnostics.log_file = observability.log_file.clone();
     state.timeline.entries.push(crate::domain::TimelineEntry {
         id: crate::shared::ids::TimelineId(0),

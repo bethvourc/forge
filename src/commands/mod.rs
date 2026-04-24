@@ -102,6 +102,13 @@ pub enum ParsedInput {
     ChangeDirectory {
         target: Option<String>,
     },
+    SetEnv {
+        key: String,
+        value: String,
+    },
+    UnsetEnv {
+        key: String,
+    },
     Quit,
     Clear,
     NextTab,
@@ -166,6 +173,12 @@ pub fn parse_input(input: &str) -> Result<ParsedInput, String> {
     }
     if let Some(target) = parse_cd_builtin(trimmed) {
         return Ok(ParsedInput::ChangeDirectory { target });
+    }
+    if let Some((key, value)) = parse_export_builtin(trimmed) {
+        return Ok(ParsedInput::SetEnv { key, value });
+    }
+    if let Some(key) = parse_unset_builtin(trimmed) {
+        return Ok(ParsedInput::UnsetEnv { key });
     }
 
     if !trimmed.starts_with('/') {
@@ -293,6 +306,45 @@ fn parse_cd_builtin(input: &str) -> Option<Option<String>> {
     }
 
     Some((!target.is_empty()).then(|| strip_matching_quotes(target).to_string()))
+}
+
+fn parse_export_builtin(input: &str) -> Option<(String, String)> {
+    let assignment = input.strip_prefix("export ")?;
+    let (key, value) = assignment.trim().split_once('=')?;
+    let key = key.trim();
+    if !is_valid_env_key(key) || value_contains_shell_evaluation(value) {
+        return None;
+    }
+
+    Some((
+        key.to_string(),
+        strip_matching_quotes(value.trim()).to_string(),
+    ))
+}
+
+fn parse_unset_builtin(input: &str) -> Option<String> {
+    let key = input.strip_prefix("unset ")?.trim();
+    if !is_valid_env_key(key) {
+        return None;
+    }
+
+    Some(key.to_string())
+}
+
+fn is_valid_env_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return false;
+    }
+
+    chars.all(|char| char == '_' || char.is_ascii_alphanumeric())
+}
+
+fn value_contains_shell_evaluation(value: &str) -> bool {
+    ["`", "$("].iter().any(|operator| value.contains(operator))
 }
 
 fn target_contains_shell_operator(target: &str) -> bool {

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
+use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::app::AppEvent;
@@ -15,13 +15,14 @@ use crate::domain::{ExecutionMode, ExecutionRequest, OutputStream};
 use crate::shared::error::{AppResult, InfraError, PtyPhase};
 use crate::shared::ids::CommandId;
 
-pub type CancellationRegistry = Arc<Mutex<HashMap<CommandId, oneshot::Sender<()>>>>;
+pub type CancellationRegistry = Arc<Mutex<HashMap<CommandId, Option<oneshot::Sender<()>>>>>;
 
 const INTERACTIVE_COMMANDS: &[&str] = &[
     "bash", "bpython", "fish", "htop", "ipython", "irb", "less", "man", "more", "nano", "node",
     "nvim", "python", "screen", "sh", "sqlite3", "ssh", "sudo", "tmux", "top", "vim", "watch",
     "zsh",
 ];
+const MANAGED_CANCEL_GRACE: Duration = Duration::from_millis(750);
 
 pub fn execution_mode_for(raw: &str, background: bool) -> ExecutionMode {
     if background {
@@ -66,7 +67,7 @@ pub fn spawn_managed_command(
     tokio::spawn(async move {
         {
             let mut registry = cancellations_for_task.lock().await;
-            registry.insert(command_id, cancel_tx);
+            registry.insert(command_id, Some(cancel_tx));
         }
 
         let _ = events_tx_for_task
@@ -101,16 +102,19 @@ pub fn spawn_managed_command(
 
         tokio::select! {
             _ = &mut cancel_rx => {
-                if let Err(error) = child.kill().await {
-                    let _ = events_tx_for_task.send(AppEvent::Error(format!(
-                        "failed to cancel command `{raw}`: {error}"
-                    ))).await;
-                } else {
-                    let _ = events_tx_for_task.send(AppEvent::CommandCancelled {
-                        command_id,
-                        job_id,
-                        service_id,
-                    }).await;
+                match cancel_managed_child(&mut child, pid, &raw).await {
+                    Ok(()) => {
+                        let _ = events_tx_for_task.send(AppEvent::CommandCancelled {
+                            command_id,
+                            job_id,
+                            service_id,
+                        }).await;
+                    }
+                    Err(error) => {
+                        let _ = events_tx_for_task.send(AppEvent::Error(format!(
+                            "failed to cancel command `{raw}`: {error}"
+                        ))).await;
+                    }
                 }
             }
             status = child.wait() => {
@@ -251,6 +255,53 @@ fn first_command_token(raw: &str) -> Option<&str> {
     raw.split_whitespace().next()
 }
 
+async fn cancel_managed_child(child: &mut Child, pid: Option<u32>, raw: &str) -> AppResult<()> {
+    terminate_managed_child(child, pid).await?;
+    match tokio::time::timeout(MANAGED_CANCEL_GRACE, child.wait()).await {
+        Ok(Ok(_status)) => Ok(()),
+        Ok(Err(error)) => Err(InfraError::Runtime(format!(
+            "failed waiting for cancelled command `{raw}`: {error}"
+        ))
+        .into()),
+        Err(_elapsed) => {
+            kill_managed_child(child, pid).await?;
+            match tokio::time::timeout(MANAGED_CANCEL_GRACE, child.wait()).await {
+                Ok(Ok(_status)) => Ok(()),
+                Ok(Err(error)) => Err(InfraError::Runtime(format!(
+                    "failed waiting for force-killed command `{raw}`: {error}"
+                ))
+                .into()),
+                Err(_elapsed) => Err(InfraError::Runtime(format!(
+                    "timed out waiting for force-killed command `{raw}`"
+                ))
+                .into()),
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn terminate_managed_child(_child: &mut Child, pid: Option<u32>) -> AppResult<()> {
+    signal_managed_process(pid, libc::SIGTERM)
+}
+
+#[cfg(not(unix))]
+async fn terminate_managed_child(child: &mut Child, _pid: Option<u32>) -> AppResult<()> {
+    child.start_kill()?;
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn kill_managed_child(_child: &mut Child, pid: Option<u32>) -> AppResult<()> {
+    signal_managed_process(pid, libc::SIGKILL)
+}
+
+#[cfg(not(unix))]
+async fn kill_managed_child(child: &mut Child, _pid: Option<u32>) -> AppResult<()> {
+    child.kill().await?;
+    Ok(())
+}
+
 fn build_shell_command(request: &ExecutionRequest) -> Command {
     let mut command = if cfg!(windows) {
         let shell = effective_shell(&request.shell, true);
@@ -267,6 +318,10 @@ fn build_shell_command(request: &ExecutionRequest) -> Command {
     command.current_dir(&request.cwd);
     for (key, value) in &request.env {
         command.env(key, value);
+    }
+    #[cfg(unix)]
+    {
+        command.process_group(0);
     }
     command.kill_on_drop(true);
     command
@@ -366,6 +421,11 @@ fn spawn_attached_pty_command_unix(
     drop(pair.slave);
 
     let pid = child.process_id();
+    let process_group = pair
+        .master
+        .process_group_leader()
+        .and_then(|leader| u32::try_from(leader).ok())
+        .or(pid);
     let reader = pair
         .master
         .try_clone_reader()
@@ -400,7 +460,7 @@ fn spawn_attached_pty_command_unix(
             &mut child,
             &*pair.master,
             &mut writer,
-            pid,
+            process_group,
             &raw,
             control_rx,
         );
@@ -437,7 +497,7 @@ fn spawn_attached_pty_command_unix(
                 }
             }
             Err(error) => {
-                let _ = terminate_process_group(pid);
+                let _ = terminate_process_group(process_group);
                 let _ = events_tx.blocking_send(AppEvent::Error(error.to_string()));
                 let _ = events_tx.blocking_send(AppEvent::CommandCancelled {
                     command_id,
@@ -671,9 +731,46 @@ fn signal_process(pid: Option<u32>, signal: i32) -> AppResult<()> {
     .into())
 }
 
+#[cfg(unix)]
+fn signal_managed_process(pid: Option<u32>, signal: i32) -> AppResult<()> {
+    let Some(pid) = pid else {
+        return Ok(());
+    };
+    let pid = pid as i32;
+
+    if unsafe { libc::killpg(pid, signal) } == 0 {
+        return Ok(());
+    }
+    let process_group_error = std::io::Error::last_os_error();
+    if matches!(process_group_error.raw_os_error(), Some(code) if code == libc::ESRCH) {
+        return Ok(());
+    }
+
+    if unsafe { libc::kill(pid, signal) } == 0 {
+        return Ok(());
+    }
+    let process_error = std::io::Error::last_os_error();
+    if matches!(process_error.raw_os_error(), Some(code) if code == libc::ESRCH) {
+        return Ok(());
+    }
+
+    Err(InfraError::Runtime(format!(
+        "failed signaling managed process {pid}: {process_error}"
+    ))
+    .into())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{execution_mode_for, ExecutionMode};
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use tokio::sync::{mpsc, Mutex};
+
+    use super::{execution_mode_for, spawn_managed_command, CancellationRegistry, ExecutionMode};
+    use crate::app::AppEvent;
+    use crate::domain::{CommandProvenance, ExecutionRequest, SafetyClass};
+    use crate::shared::ids::{CommandId, JobId};
 
     #[test]
     fn chooses_pty_for_interactive_foreground_commands() {
@@ -701,5 +798,76 @@ mod tests {
             execution_mode_for("pwd", false),
             ExecutionMode::Managed
         ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn managed_command_cancellation_emits_cancelled_event() {
+        let (events_tx, mut events_rx) = mpsc::channel(16);
+        let cancellations: CancellationRegistry = Arc::new(Mutex::new(Default::default()));
+        let request = ExecutionRequest {
+            command_id: CommandId(1),
+            job_id: JobId(2),
+            service_id: None,
+            raw: "sleep 30".to_string(),
+            cwd: std::env::current_dir().expect("current dir should exist"),
+            env: BTreeMap::new(),
+            shell: std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string()),
+            mode: ExecutionMode::Managed,
+            provenance: CommandProvenance::UserInput,
+            background: false,
+            safety_class: SafetyClass::Passive,
+        };
+
+        spawn_managed_command(request, events_tx, cancellations.clone())
+            .expect("managed command should spawn");
+
+        let started = tokio::time::timeout(std::time::Duration::from_secs(2), events_rx.recv())
+            .await
+            .expect("command should start")
+            .expect("start event should be sent");
+        assert!(matches!(
+            started,
+            AppEvent::CommandStarted {
+                command_id: CommandId(1),
+                ..
+            }
+        ));
+
+        let cancel_tx = {
+            let mut registry = cancellations.lock().await;
+            registry
+                .get_mut(&CommandId(1))
+                .and_then(Option::take)
+                .expect("command should be cancellable")
+        };
+        let _ = cancel_tx.send(());
+
+        loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(2), events_rx.recv())
+                .await
+                .expect("cancelled event should arrive")
+                .expect("cancelled event should be sent");
+            if matches!(
+                event,
+                AppEvent::CommandCancelled {
+                    command_id: CommandId(1),
+                    ..
+                }
+            ) {
+                break;
+            }
+        }
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if cancellations.lock().await.is_empty() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("cancellation registry should be cleaned up");
     }
 }

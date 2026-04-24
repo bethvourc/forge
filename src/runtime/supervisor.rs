@@ -1,21 +1,22 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{mpsc, Mutex};
 
 use crate::ai::AiRuntime;
 use crate::app::AppEvent;
 use crate::domain::{AiRequest, ExecutionRequest};
 use crate::infra::{git, project, shell};
-use crate::shared::error::AppResult;
+use crate::shared::error::{AppResult, InfraError};
 use crate::shared::ids::CommandId;
 
 #[derive(Clone)]
 pub struct RuntimeSupervisor {
     events_tx: mpsc::Sender<AppEvent>,
     ai_runtime: AiRuntime,
-    cancellations: Arc<Mutex<HashMap<CommandId, oneshot::Sender<()>>>>,
+    cancellations: shell::CancellationRegistry,
 }
 
 impl RuntimeSupervisor {
@@ -69,10 +70,35 @@ impl RuntimeSupervisor {
 
     pub async fn cancel_command(&self, command_id: CommandId) -> AppResult<()> {
         let mut registry = self.cancellations.lock().await;
-        if let Some(cancel_tx) = registry.remove(&command_id) {
+        if let Some(cancel_tx) = registry.get_mut(&command_id).and_then(Option::take) {
             let _ = cancel_tx.send(());
         }
         Ok(())
+    }
+
+    pub async fn shutdown_commands(&self, timeout: Duration) -> AppResult<()> {
+        {
+            let mut registry = self.cancellations.lock().await;
+            for cancel_tx in registry.values_mut().filter_map(Option::take) {
+                let _ = cancel_tx.send(());
+            }
+        }
+
+        let deadline = Instant::now() + timeout;
+        loop {
+            if self.cancellations.lock().await.is_empty() {
+                return Ok(());
+            }
+
+            if Instant::now() >= deadline {
+                return Err(InfraError::Runtime(
+                    "timed out waiting for managed commands to shut down".to_string(),
+                )
+                .into());
+            }
+
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
     }
 
     pub fn refresh_project(&self, start_dir: PathBuf) {

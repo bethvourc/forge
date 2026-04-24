@@ -3,4 +3,5 @@ target/
 .DS_Store
 
 .forge/logs/
+.forge/state/
 *.log
