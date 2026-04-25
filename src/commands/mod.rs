@@ -14,7 +14,7 @@ impl SlashCommandSpec {
     }
 }
 
-const SLASH_COMMANDS: [SlashCommandSpec; 12] = [
+const SLASH_COMMANDS: [SlashCommandSpec; 15] = [
     SlashCommandSpec {
         usage: "/help",
         completion: "/help",
@@ -44,6 +44,21 @@ const SLASH_COMMANDS: [SlashCommandSpec; 12] = [
         usage: "/cancel <id>",
         completion: "/cancel ",
         summary: "Cancel a tracked managed command.",
+    },
+    SlashCommandSpec {
+        usage: "/history",
+        completion: "/history",
+        summary: "Open recent shell command history.",
+    },
+    SlashCommandSpec {
+        usage: "/rerun <id>",
+        completion: "/rerun ",
+        summary: "Replay a tracked command through safety checks.",
+    },
+    SlashCommandSpec {
+        usage: "/rerun-last",
+        completion: "/rerun-last",
+        summary: "Replay the latest shell history entry.",
     },
     SlashCommandSpec {
         usage: "/approve",
@@ -84,6 +99,16 @@ pub enum ParsedInput {
         background: bool,
         provenance: CommandProvenance,
     },
+    ChangeDirectory {
+        target: Option<String>,
+    },
+    SetEnv {
+        key: String,
+        value: String,
+    },
+    UnsetEnv {
+        key: String,
+    },
     Quit,
     Clear,
     NextTab,
@@ -91,6 +116,9 @@ pub enum ParsedInput {
     ApprovePending,
     DenyPending,
     Cancel(CommandId),
+    History,
+    Rerun(CommandId),
+    RerunLast,
     Help,
     AiPrompt {
         prompt: String,
@@ -137,6 +165,22 @@ pub fn parse_input(input: &str) -> Result<ParsedInput, String> {
         return Err("input is empty".to_string());
     }
 
+    if trimmed == "clear" {
+        return Ok(ParsedInput::Clear);
+    }
+    if trimmed == "exit" || trimmed == "quit" {
+        return Ok(ParsedInput::Quit);
+    }
+    if let Some(target) = parse_cd_builtin(trimmed) {
+        return Ok(ParsedInput::ChangeDirectory { target });
+    }
+    if let Some((key, value)) = parse_export_builtin(trimmed) {
+        return Ok(ParsedInput::SetEnv { key, value });
+    }
+    if let Some(key) = parse_unset_builtin(trimmed) {
+        return Ok(ParsedInput::UnsetEnv { key });
+    }
+
     if !trimmed.starts_with('/') {
         return parse_shell_input(trimmed, CommandProvenance::UserInput);
     }
@@ -162,6 +206,12 @@ pub fn parse_input(input: &str) -> Result<ParsedInput, String> {
     if trimmed == "/help" {
         return Ok(ParsedInput::Help);
     }
+    if trimmed == "/history" {
+        return Ok(ParsedInput::History);
+    }
+    if trimmed == "/rerun-last" {
+        return Ok(ParsedInput::RerunLast);
+    }
     if let Some(rest) = trimmed.strip_prefix("/bg ") {
         return Ok(ParsedInput::Execute {
             command: rest.trim().to_string(),
@@ -175,6 +225,13 @@ pub fn parse_input(input: &str) -> Result<ParsedInput, String> {
             .parse::<u64>()
             .map_err(|_| "cancel expects a numeric command id".to_string())?;
         return Ok(ParsedInput::Cancel(CommandId(id)));
+    }
+    if let Some(rest) = trimmed.strip_prefix("/rerun ") {
+        let id = rest
+            .trim()
+            .parse::<u64>()
+            .map_err(|_| "rerun expects a numeric command id".to_string())?;
+        return Ok(ParsedInput::Rerun(CommandId(id)));
     }
     if let Some(rest) = trimmed.strip_prefix("/ai ") {
         return Ok(ParsedInput::AiPrompt {
@@ -235,4 +292,75 @@ fn parse_shell(input: &str) -> (String, bool) {
         return (stripped.trim().to_string(), true);
     }
     (trimmed.to_string(), false)
+}
+
+fn parse_cd_builtin(input: &str) -> Option<Option<String>> {
+    if input == "cd" {
+        return Some(None);
+    }
+
+    let target = input.strip_prefix("cd ")?;
+    let target = target.trim();
+    if target_contains_shell_operator(target) {
+        return None;
+    }
+
+    Some((!target.is_empty()).then(|| strip_matching_quotes(target).to_string()))
+}
+
+fn parse_export_builtin(input: &str) -> Option<(String, String)> {
+    let assignment = input.strip_prefix("export ")?;
+    let (key, value) = assignment.trim().split_once('=')?;
+    let key = key.trim();
+    if !is_valid_env_key(key) || value_contains_shell_evaluation(value) {
+        return None;
+    }
+
+    Some((
+        key.to_string(),
+        strip_matching_quotes(value.trim()).to_string(),
+    ))
+}
+
+fn parse_unset_builtin(input: &str) -> Option<String> {
+    let key = input.strip_prefix("unset ")?.trim();
+    if !is_valid_env_key(key) {
+        return None;
+    }
+
+    Some(key.to_string())
+}
+
+fn is_valid_env_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return false;
+    }
+
+    chars.all(|char| char == '_' || char.is_ascii_alphanumeric())
+}
+
+fn value_contains_shell_evaluation(value: &str) -> bool {
+    ["`", "$("].iter().any(|operator| value.contains(operator))
+}
+
+fn target_contains_shell_operator(target: &str) -> bool {
+    ["&&", "||", ";", "|", ">", "<", "`", "$("]
+        .iter()
+        .any(|operator| target.contains(operator))
+}
+
+fn strip_matching_quotes(value: &str) -> &str {
+    let bytes = value.as_bytes();
+    if bytes.len() >= 2
+        && ((bytes.first() == Some(&b'"') && bytes.last() == Some(&b'"'))
+            || (bytes.first() == Some(&b'\'') && bytes.last() == Some(&b'\'')))
+    {
+        &value[1..value.len() - 1]
+    } else {
+        value
+    }
 }

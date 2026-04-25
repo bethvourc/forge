@@ -13,3 +13,8 @@ turning the repository root into a dumping ground, for example:
 - subsystem design notes
 - runtime flow documentation
 - operator or contributor guides
+
+Current documents:
+
+- `IMPLEMENTATION_PLAN.md`: remaining end-to-end implementation work, organized into
+  agent-sized tracks with acceptance criteria and validation commands.

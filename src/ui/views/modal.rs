@@ -95,8 +95,14 @@ pub fn render(frame: &mut Frame<'_>, state: &AppState) {
                 Line::from("/apply <n>         run AI proposal n through safety checks"),
                 Line::from("/bg <cmd>          run a background command"),
                 Line::from("/cancel <id>       cancel a running command"),
+                Line::from("/history           show recent shell command history"),
+                Line::from("/rerun <id>        replay command id through safety checks"),
+                Line::from("/rerun-last        replay the latest shell history entry"),
                 Line::from("/approve           approve the current pending action"),
                 Line::from("/deny              deny the current pending action"),
+                Line::from("cd <path>          update Forge session cwd"),
+                Line::from("export K=V         set a Forge session env value"),
+                Line::from("unset K            remove a Forge session env value"),
                 Line::from("/tab next          next dashboard tab"),
                 Line::from("/tab prev          previous dashboard tab"),
                 Line::from("/clear             clear input and visible logs"),
@@ -129,6 +135,69 @@ pub fn render(frame: &mut Frame<'_>, state: &AppState) {
                 area,
             );
         }
+        ModalState::History => {
+            let mut lines = vec![
+                Line::from(Span::styled(
+                    "Command History",
+                    Style::default()
+                        .fg(theme::ACCENT)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::raw(""),
+            ];
+
+            if state.commands.history.is_empty() {
+                lines.push(Line::from("No shell history recorded yet."));
+            } else {
+                lines.push(Line::from(vec![
+                    Span::styled("id", theme::subtle()),
+                    Span::raw("    "),
+                    Span::styled("status", theme::subtle()),
+                    Span::raw("      "),
+                    Span::styled("cwd", theme::subtle()),
+                    Span::raw("    "),
+                    Span::styled("command", theme::subtle()),
+                ]));
+                lines.push(Line::raw(""));
+
+                for entry in state.commands.history.iter().rev().take(12) {
+                    let id = entry
+                        .command_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "-".to_string());
+                    let status = status_label(entry.status);
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("{id:<4}"), theme::accent()),
+                        Span::styled(format!("{status:<10}"), theme::muted()),
+                        Span::styled(
+                            format!("{:<18}", truncate_path(&entry.cwd, 18)),
+                            theme::subtle(),
+                        ),
+                        Span::styled(truncate(&entry.raw, 72), theme::primary()),
+                    ]));
+                }
+
+                lines.push(Line::raw(""));
+                lines.push(Line::from(
+                    "/rerun <id> replays a command with approval checks.",
+                ));
+                lines.push(Line::from("/rerun-last replays the newest history entry."));
+            }
+
+            frame.render_widget(
+                Paragraph::new(lines)
+                    .alignment(Alignment::Left)
+                    .wrap(Wrap { trim: false })
+                    .block(
+                        Block::default()
+                            .title("History")
+                            .borders(Borders::ALL)
+                            .border_style(theme::pane_border(true))
+                            .style(theme::panel_surface(true)),
+                    ),
+                area,
+            );
+        }
         ModalState::Error(message) => {
             frame.render_widget(
                 Paragraph::new(message.clone())
@@ -154,6 +223,35 @@ fn provenance_label(provenance: CommandProvenance) -> &'static str {
         CommandProvenance::ApprovalEscalation => "approval",
         CommandProvenance::AiSuggestion => "ai",
     }
+}
+
+fn status_label(status: crate::domain::CommandStatus) -> &'static str {
+    use crate::domain::CommandStatus::*;
+    match status {
+        PendingReview => "review",
+        PendingApproval => "pending",
+        Queued => "queued",
+        Running => "running",
+        Succeeded => "done",
+        Failed => "failed",
+        Cancelled => "cancelled",
+        Denied => "denied",
+    }
+}
+
+fn truncate(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let kept = value
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect::<String>();
+    format!("{kept}…")
+}
+
+fn truncate_path(path: &std::path::Path, max_chars: usize) -> String {
+    truncate(&path.display().to_string(), max_chars)
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {

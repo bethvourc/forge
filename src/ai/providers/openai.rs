@@ -191,6 +191,9 @@ fn build_developer_prompt(request: &AiRequest) -> String {
             "Dashboard tab: {}\n",
             "Repo: {}\n",
             "Project root: {}\n",
+            "Session cwd: {}\n",
+            "Session shell: {}\n",
+            "Last exit status: {}\n",
             "Git branch: {}\n",
             "Git head: {}\n",
             "Git dirty: {}\n",
@@ -206,6 +209,14 @@ fn build_developer_prompt(request: &AiRequest) -> String {
         request.context.ui.dashboard_tab,
         request.context.project.name,
         request.context.project.root.display(),
+        request.context.session.cwd.display(),
+        request.context.session.shell,
+        request
+            .context
+            .session
+            .last_exit_status
+            .map(|status| status.to_string())
+            .unwrap_or_else(|| "none".to_string()),
         request
             .context
             .git
@@ -233,7 +244,13 @@ fn build_developer_prompt(request: &AiRequest) -> String {
                 .context
                 .commands
                 .iter()
-                .map(|command| format!("#{} {:?} {}", command.id, command.status, command.raw))
+                .map(|command| format!(
+                    "#{} {:?} cwd={} {}",
+                    command.id,
+                    command.status,
+                    command.cwd.display(),
+                    command.raw
+                ))
                 .collect::<Vec<_>>()
         ),
         render_list(

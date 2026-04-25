@@ -15,7 +15,8 @@ pub mod timeline;
 pub use ai::{
     AiActionProposal, AiCitation, AiCommandContext, AiContextBundle, AiGitContext, AiLogContext,
     AiMessage, AiMessageRole, AiProjectContext, AiRequest, AiRequestKind, AiResponse,
-    AiServiceContext, AiSessionState, AiStatus, AiTestContext, AiTimelineContext, AiUiContext,
+    AiServiceContext, AiSessionState, AiShellSessionContext, AiStatus, AiTestContext,
+    AiTimelineContext, AiUiContext,
 };
 pub use app::{
     AppMetaState, AppState, DashboardTab, FocusTarget, InputEditorState, InputMode, ModalState,
@@ -23,8 +24,8 @@ pub use app::{
 };
 pub use approval::{ApprovalDecision, ApprovalMode, ApprovalRequest, ApprovalState, SafetyClass};
 pub use command::{
-    CommandProvenance, CommandRecord, CommandState, CommandStatus, ExecutionMode, ExecutionRequest,
-    OutputStream,
+    CommandHistoryEntry, CommandProvenance, CommandRecord, CommandState, CommandStatus,
+    ExecutionMode, ExecutionRequest, OutputStream, ShellSessionState,
 };
 pub use diagnostics::{DiagnosticLevel, DiagnosticRecord, DiagnosticsState};
 pub use git::GitSnapshot;

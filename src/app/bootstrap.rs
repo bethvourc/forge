@@ -1,8 +1,10 @@
 use crate::ai::AiRuntime;
 use crate::app::AppStore;
 use crate::config::{load_config, CliArgs};
-use crate::domain::{AppState, GitSnapshot, ProjectContext, TimelineKind};
-use crate::infra::{git, project};
+use crate::domain::{
+    AppState, DiagnosticLevel, DiagnosticRecord, GitSnapshot, ProjectContext, TimelineKind,
+};
+use crate::infra::{git, project, state as local_state};
 use crate::observability::{init_observability, install_panic_hook};
 use crate::runtime::Runtime;
 use crate::shared::error::AppResult;
@@ -27,6 +29,44 @@ pub async fn bootstrap(cli: CliArgs) -> AppResult<Runtime> {
     };
 
     let mut state = AppState::new(loaded.config.clone(), project, git);
+    match local_state::load_command_history(
+        &state.project.root,
+        state.config.commands.history_limit,
+    ) {
+        Ok(history) => {
+            state.commands.history = history;
+        }
+        Err(error) => {
+            state.diagnostics.records.push(DiagnosticRecord {
+                at: now_utc(),
+                level: DiagnosticLevel::Warn,
+                message: format!("failed to load command history: {error}"),
+                context: Some(state.project.root.display().to_string()),
+            });
+        }
+    }
+    match local_state::load_shell_session(&state.project.root) {
+        Ok(Some(session)) if session.cwd.is_dir() => {
+            state.commands.session = session;
+        }
+        Ok(Some(session)) => {
+            state.diagnostics.records.push(DiagnosticRecord {
+                at: now_utc(),
+                level: DiagnosticLevel::Warn,
+                message: "saved shell session cwd is no longer available".to_string(),
+                context: Some(session.cwd.display().to_string()),
+            });
+        }
+        Ok(None) => {}
+        Err(error) => {
+            state.diagnostics.records.push(DiagnosticRecord {
+                at: now_utc(),
+                level: DiagnosticLevel::Warn,
+                message: format!("failed to load shell session: {error}"),
+                context: Some(state.project.root.display().to_string()),
+            });
+        }
+    }
     state.diagnostics.log_file = observability.log_file.clone();
     state.timeline.entries.push(crate::domain::TimelineEntry {
         id: crate::shared::ids::TimelineId(0),
