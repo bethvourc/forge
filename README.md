@@ -27,38 +27,6 @@ The product goal is to let a user:
 
 Forge should feel like an operator cockpit for local development and DevOps workflows, not a generic chatbot or a thin command wrapper.
 
----
-
-## Current Status
-
-Forge currently has a working foundation:
-
-- Ratatui terminal UI with status bar, command pane, dashboard, event stream, and modals
-- async runtime loop built on Tokio and Crossterm events
-- managed shell command execution
-- streaming command output into structured logs
-- command, job, process, service, Git, log, test, timeline, approval, and AI domain models
-- slash command parser and command suggestions
-- safety classification and approval routing
-- AI provider abstraction with mock, OpenAI, disabled, and unconfigured providers
-- TOML configuration loading from defaults, global config, project config, environment, and CLI flags
-- structured tracing to `.forge/logs/forge.log`
-- foundation tests for parsing, state transitions, safety routing, AI proposal handling, and rendering
-
-Forge is not yet complete end to end. The remaining work is tracked in `docs/IMPLEMENTATION_PLAN.md`.
-
-Major remaining areas include:
-
-- persistent PTY shell sessions and interactive shell polish
-- approval audit history and session restore hardening
-- real service discovery, port inspection, and health checks
-- process CPU/memory monitoring
-- file and service log ingestion
-- test result adapters
-- expanded Git context and diff summaries
-- richer AI workflows and patch proposals behind approvals
-- scrollback, inspectors, and complete keyboard workflows
-- release packaging and install documentation
 
 ---
 
